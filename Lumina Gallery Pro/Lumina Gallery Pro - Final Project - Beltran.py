@@ -10,7 +10,6 @@ import hashlib
 from datetime import datetime
 from contextlib import contextmanager
 
-# Optional psutil with graceful fallback
 try:
     import psutil
     HAS_PSUTIL = True
@@ -18,9 +17,8 @@ except ImportError:
     HAS_PSUTIL = False
 
 class DatabaseManager:
-    """Production SQLite database with optimized indexes and schema"""
     
-    SCHEMA_VERSION = 2  # For future migrations
+    SCHEMA_VERSION = 2
     
     def __init__(self, db_path="gallery.db"):
         self.db_path = db_path
@@ -29,7 +27,6 @@ class DatabaseManager:
         
     @contextmanager
     def get_connection(self):
-        """Context manager for database connections"""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         try:
@@ -39,11 +36,9 @@ class DatabaseManager:
             conn.close()
             
     def init_database(self):
-        """Create tables with production indexes"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Images table with dimensions
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS images (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,7 +55,6 @@ class DatabaseManager:
                 )
             ''')
             
-            # Tags table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS tags (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +62,6 @@ class DatabaseManager:
                 )
             ''')
             
-            # Image-Tag junction
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS image_tags (
                     image_id INTEGER,
@@ -79,7 +72,6 @@ class DatabaseManager:
                 )
             ''')
             
-            # Albums
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS albums (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,7 +81,6 @@ class DatabaseManager:
                 )
             ''')
             
-            # Album-Image junction
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS album_images (
                     album_id INTEGER,
@@ -101,39 +92,27 @@ class DatabaseManager:
                 )
             ''')
             
-            # Schema version tracking
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS schema_version (
                     version INTEGER PRIMARY KEY
                 )
             ''')
             
-            # PRODUCTION INDEXES - Phase 1
-            # Core lookups
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_images_path ON images(path)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_images_sha256 ON images(sha256)')
-            
-            # Sorting and filtering
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_images_favorite ON images(favorite)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_images_mtime ON images(mtime)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_images_view_count ON images(view_count)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_images_size ON images(size)')
-            
-            # Dimensions for future resolution sorting
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_images_width ON images(width)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_images_height ON images(height)')
-            
-            # Tag system performance
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_image_tags_image_id ON image_tags(image_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_image_tags_tag_id ON image_tags(tag_id)')
-            
-            # Album performance
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_album_images_album_id ON album_images(album_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_album_images_image_id ON album_images(image_id)')
             
     def migrate_if_needed(self):
-        """Handle schema migrations"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT version FROM schema_version')
@@ -141,7 +120,6 @@ class DatabaseManager:
             current_version = row['version'] if row else 0
             
             if current_version < 1:
-                # Migration to v1: Add width/height if missing
                 try:
                     cursor.execute('SELECT width FROM images LIMIT 1')
                 except sqlite3.OperationalError:
@@ -153,22 +131,15 @@ class DatabaseManager:
                 cursor.execute('INSERT OR REPLACE INTO schema_version (version) VALUES (1)')
                 
             if current_version < 2:
-                # Migration to v2: Add view_count index if missing
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_images_view_count ON images(view_count)')
                 cursor.execute('INSERT OR REPLACE INTO schema_version (version) VALUES (2)')
                 
     def get_or_create_image(self, path, size, mtime, sha256=None, width=None, height=None):
-        """
-        Smart upsert with change detection.
-        Only computes hash if file changed (size or mtime different).
-        """
-        # Normalize path for cross-platform consistency
         path = os.path.abspath(path)
         
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Check existing record
             cursor.execute('SELECT id, size, mtime, sha256, width, height FROM images WHERE path = ?', (path,))
             row = cursor.fetchone()
             
@@ -178,18 +149,12 @@ class DatabaseManager:
                 existing_mtime = row['mtime']
                 existing_sha256 = row['sha256']
                 
-                # SMART CHANGE DETECTION
-                # If size and mtime unchanged, assume file is unchanged
                 if size == existing_size and mtime == existing_mtime:
-                    # File unchanged - skip expensive hash
-                    # Update dimensions if newly provided and missing
                     if width and height and (row['width'] is None or row['height'] is None):
                         cursor.execute('UPDATE images SET width = ?, height = ? WHERE id = ?',
                                      (width, height, existing_id))
-                    return existing_id, False  # Unchanged
+                    return existing_id, False
                 
-                # File changed - need to update
-                # Use new hash if provided, otherwise keep old (will be updated later)
                 new_sha256 = sha256 if sha256 else existing_sha256
                 
                 cursor.execute('''
@@ -197,31 +162,27 @@ class DatabaseManager:
                     SET size = ?, mtime = ?, sha256 = ?, width = ?, height = ?
                     WHERE id = ?
                 ''', (size, mtime, new_sha256, width, height, existing_id))
-                return existing_id, True  # Updated
+                return existing_id, True
                 
             else:
-                # Insert new record
                 cursor.execute('''
                     INSERT INTO images (path, size, mtime, sha256, width, height)
                     VALUES (?, ?, ?, ?, ?, ?)
                 ''', (path, size, mtime, sha256, width, height))
-                return cursor.lastrowid, True  # New
+                return cursor.lastrowid, True
                 
     def update_image_hash(self, image_id, sha256):
-        """Update hash separately (for background hashing)"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('UPDATE images SET sha256 = ? WHERE id = ?', (sha256, image_id))
             
     def update_image_dimensions(self, image_id, width, height):
-        """Update dimensions when image is first loaded"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('UPDATE images SET width = ?, height = ? WHERE id = ?',
                          (width, height, image_id))
             
     def update_view_stats(self, image_id):
-        """Increment view count and update last viewed time"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -232,7 +193,6 @@ class DatabaseManager:
             ''', (image_id,))
             
     def toggle_favorite(self, image_id):
-        """Toggle favorite status, returns new state"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -246,7 +206,6 @@ class DatabaseManager:
             return row['favorite'] if row else 0
             
     def get_image_by_path(self, path):
-        """Get image record by normalized path"""
         path = os.path.abspath(path)
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -254,24 +213,18 @@ class DatabaseManager:
             return cursor.fetchone()
             
     def get_image_by_id(self, image_id):
-        """Get image record by ID"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM images WHERE id = ?', (image_id,))
             return cursor.fetchone()
             
     def find_duplicates_by_hash(self, sha256):
-        """Find all images with matching hash"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT id, path FROM images WHERE sha256 = ? AND sha256 IS NOT NULL', (sha256,))
             return [(row['id'], row['path']) for row in cursor.fetchall()]
             
     def get_all_duplicate_groups(self):
-        """
-        Get all duplicate groups (hash collisions).
-        Returns: [(sha256, [(id, path), ...]), ...]
-        """
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -295,27 +248,23 @@ class DatabaseManager:
             return list(groups.items())
             
     def get_all_image_paths(self):
-        """Get all tracked paths for sync"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT path FROM images')
             return {row['path'] for row in cursor.fetchall()}
             
     def remove_image(self, path):
-        """Remove image from database (path normalized)"""
         path = os.path.abspath(path)
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM images WHERE path = ?', (path,))
             
     def add_tag(self, image_id, tag_name):
-        """Add tag to image"""
-        tag_name = tag_name.strip().lower()  # Normalize
+        tag_name = tag_name.strip().lower()
         
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Get or create tag
             cursor.execute('SELECT id FROM tags WHERE name = ?', (tag_name,))
             row = cursor.fetchone()
             
@@ -325,15 +274,13 @@ class DatabaseManager:
                 cursor.execute('INSERT INTO tags (name) VALUES (?)', (tag_name,))
                 tag_id = cursor.lastrowid
                 
-            # Link tag to image
             try:
                 cursor.execute('INSERT INTO image_tags (image_id, tag_id) VALUES (?, ?)',
                              (image_id, tag_id))
             except sqlite3.IntegrityError:
-                pass  # Already tagged
+                pass
                 
     def remove_tag(self, image_id, tag_name):
-        """Remove tag from image"""
         tag_name = tag_name.strip().lower()
         
         with self.get_connection() as conn:
@@ -346,7 +293,6 @@ class DatabaseManager:
             ''', (image_id, tag_name))
             
     def get_tags_for_image(self, image_id):
-        """Get all tags for an image"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -358,7 +304,6 @@ class DatabaseManager:
             return [row['name'] for row in cursor.fetchall()]
             
     def search_by_tag(self, tag_name):
-        """Find images by tag"""
         tag_name = tag_name.strip().lower()
         
         with self.get_connection() as conn:
@@ -372,7 +317,6 @@ class DatabaseManager:
             return [row['path'] for row in cursor.fetchall()]
             
     def get_all_tags(self):
-        """Get all tags with usage counts"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -385,7 +329,6 @@ class DatabaseManager:
             return [(row['name'], row['count']) for row in cursor.fetchall()]
             
     def get_stats(self):
-        """Get database statistics"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
@@ -420,14 +363,12 @@ class ProductionGalleryApp:
         self.is_windows = platform.system() == "Windows"
         self.db = DatabaseManager()
         
-        # Data architecture
         self.all_images = []
         self.images = []
         self.image_metadata = {}
         self.thumbnail_cache = {}
         self.filter_query = ""
         
-        # State
         self.current_index = 0
         self.view_mode = "grid"
         self.sort_mode = "name"
@@ -439,11 +380,9 @@ class ProductionGalleryApp:
         self.showing_favorites_only = False
         self.showing_duplicates_only = False
         
-        # Config
         self.thumbnail_size = (150, 150)
         self.columns = 3
         
-        # Theme
         self.is_dark = True
         self.colors = self.get_dark_theme()
         self.theme_registry = []
@@ -460,7 +399,7 @@ class ProductionGalleryApp:
             'text': '#f5f5f5', 'text_secondary': '#a3a3a3',
             'border': '#262626', 'danger': '#ef4444',
             'success': '#22c55e', 'favorite': '#f59e0b',
-            'duplicate': '#ec4899'  # Pink for duplicates
+            'duplicate': '#ec4899'
         }
         
     def get_light_theme(self):
@@ -547,21 +486,18 @@ class ProductionGalleryApp:
         controls.pack(side=tk.RIGHT, padx=20, pady=10)
         self.register_widget(controls, 'bg', 'surface')
         
-        # Duplicates filter (Future feature prep)
         self.dup_filter_btn = tk.Label(controls, text="⚡ Duplicates", font=("Segoe UI", 10),
                                       padx=15, pady=6, cursor="hand2")
         self.dup_filter_btn.bind('<Button-1>', lambda e: self.show_duplicates())
         self.register_widget(self.dup_filter_btn, 'duplicate_button')
         self.dup_filter_btn.pack(side=tk.LEFT, padx=(0, 10))
         
-        # Favorites filter
         self.fav_filter_btn = tk.Label(controls, text="★ Favorites", font=("Segoe UI", 10),
                                       padx=15, pady=6, cursor="hand2")
         self.fav_filter_btn.bind('<Button-1>', lambda e: self.toggle_favorites_filter())
         self.register_widget(self.fav_filter_btn, 'button')
         self.fav_filter_btn.pack(side=tk.LEFT, padx=(0, 10))
         
-        # Sort
         self.sort_var = tk.StringVar(value="Sort: Name")
         self.sort_menu = tk.OptionMenu(controls, self.sort_var, 
                                       "Sort: Name", "Sort: Date", "Sort: Size", "Sort: Views", "Sort: Resolution",
@@ -594,7 +530,6 @@ class ProductionGalleryApp:
         self.register_widget(self.view_btn, 'accent_button')
         self.view_btn.pack(side=tk.LEFT)
         
-        # Search
         self.search_var = tk.StringVar()
         self.search_entry = tk.Entry(self.header, textvariable=self.search_var,
                                     relief=tk.FLAT, font=("Segoe UI", 11), width=25)
@@ -740,7 +675,6 @@ class ProductionGalleryApp:
         self.register_widget(self.count_label, 'both', 'surface', 'text_secondary')
         
     def compute_sha256(self, filepath):
-        """Compute SHA256 hash for duplicate detection"""
         try:
             sha256_hash = hashlib.sha256()
             with open(filepath, "rb") as f:
@@ -763,7 +697,6 @@ class ProductionGalleryApp:
             self.show_empty_state()
             
     def load_from_directory(self, directory, silent=False):
-        """Smart scan with change detection - no unnecessary hashing"""
         image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp'}
         
         new_images = []
@@ -786,20 +719,11 @@ class ProductionGalleryApp:
                     size = stat.st_size
                     mtime = stat.st_mtime
                     
-                    # SMART HASHING: Only compute hash if file changed
-                    # get_or_create_image compares size+mtime first
-                    # If unchanged, skips hash computation entirely
                     image_id, was_modified = self.db.get_or_create_image(img_path, size, mtime)
                     
                     if was_modified:
-                        # File is new or changed - compute hash in background if needed
-                        # For now, skip hash to maintain speed
-                        # sha256 = self.compute_sha256(img_path)
-                        # if sha256:
-                        #     self.db.update_image_hash(image_id, sha256)
                         pass
                         
-                    # Cache metadata (fast path)
                     self.image_metadata[img_path] = {
                         'id': image_id,
                         'size': size,
@@ -807,10 +731,8 @@ class ProductionGalleryApp:
                         'path': img_path
                     }
                     
-                    # Categorize
                     existing = self.db.get_image_by_id(image_id)
                     if existing and existing['created_at']:
-                        # Check if newly created or updated
                         if was_modified and existing['view_count'] == 0:
                             added_count += 1
                         elif was_modified:
@@ -823,7 +745,6 @@ class ProductionGalleryApp:
                 except Exception as e:
                     print(f"Error processing {img_path}: {e}")
                     
-            # Merge with existing, remove duplicates
             self.all_images = list(dict.fromkeys(self.all_images + new_images))
             
             self.apply_filter_and_sort()
@@ -833,7 +754,6 @@ class ProductionGalleryApp:
             messagebox.showinfo("No Images", "No image files found.")
             
     def apply_filter_and_sort(self):
-        """Apply filters and sorting using database where possible"""
         filtered = self.all_images.copy()
         
         if self.showing_favorites_only:
@@ -844,7 +764,6 @@ class ProductionGalleryApp:
                 filtered = [p for p in filtered if p in fav_paths]
                 
         if self.showing_duplicates_only:
-            # Show only images that have duplicates
             dup_groups = self.db.get_all_duplicate_groups()
             dup_paths = set()
             for hash_val, items in dup_groups:
@@ -856,7 +775,6 @@ class ProductionGalleryApp:
             filtered = [img for img in filtered 
                        if self.filter_query in os.path.basename(img).lower()]
                        
-        # Sorting
         if self.sort_mode == "name":
             filtered.sort(key=lambda x: os.path.basename(x).lower())
         elif self.sort_mode == "date":
@@ -907,7 +825,6 @@ class ProductionGalleryApp:
         self.apply_filter_and_sort()
         
     def show_duplicates(self):
-        """Show duplicate groups (Future feature foundation)"""
         self.showing_duplicates_only = not self.showing_duplicates_only
         self.showing_favorites_only = False
         
@@ -915,7 +832,6 @@ class ProductionGalleryApp:
             self.dup_filter_btn.config(text="⚡ Duplicates Only", bg=self.colors['duplicate'])
             self.fav_filter_btn.config(text="★ Favorites")
             
-            # Show duplicate stats
             groups = self.db.get_all_duplicate_groups()
             total_dups = sum(len(items) for hash_val, items in groups)
             self.update_status(f"Found {len(groups)} duplicate groups ({total_dups} images)")
@@ -970,8 +886,6 @@ class ProductionGalleryApp:
         new_tags = simpledialog.askstring("Edit Tags", "Enter tags (comma separated):", 
                                           initialvalue=tag_str)
         if new_tags is not None:
-            # Simple approach: clear and re-add
-            # In production, diff and update selectively
             for tag in [t.strip() for t in new_tags.split(",") if t.strip()]:
                 self.db.add_tag(meta['id'], tag)
             self.update_tags_display()
@@ -1088,7 +1002,6 @@ class ProductionGalleryApp:
             img = ImageOps.exif_transpose(img)
             img.thumbnail(self.thumbnail_size, Image.Resampling.LANCZOS)
             
-            # Store dimensions in DB if not already present
             meta = self.image_metadata.get(img_path, {})
             if 'id' in meta and ('width' not in meta or not meta['width']):
                 full_img = Image.open(img_path)
@@ -1105,7 +1018,6 @@ class ProductionGalleryApp:
             img_label.place(relx=0.5, rely=0.4, anchor="center")
             self.register_widget(img_label, 'bg', 'surface')
             
-            # Indicators
             meta = self.image_metadata.get(img_path, {})
             is_fav = False
             is_dup = False
@@ -1114,7 +1026,6 @@ class ProductionGalleryApp:
                 row = self.db.get_image_by_id(meta['id'])
                 if row:
                     is_fav = row['favorite']
-                    # Check if duplicate
                     if row['sha256']:
                         dups = self.db.find_duplicates_by_hash(row['sha256'])
                         is_dup = len(dups) > 1
@@ -1485,8 +1396,6 @@ class ProductionGalleryApp:
                     pass
                 self._resize_job = None
             self._resize_job = self.root.after(200, self.fit_image_to_window)
-
-from tkinter import simpledialog
 
 def main():
     root = tk.Tk()
