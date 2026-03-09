@@ -1,4 +1,4 @@
-# Lumina Gallery Pro - Database Edition
+# Lumina Gallery Pro Max 
 
 A high-performance, production-ready image gallery built with Python and Tkinter. Tracks your photos, manages metadata, and helps you organize, sort, and filter your collection efficiently. Optimized for large libraries with smart hashing, duplicate detection, and favorites support.
 
