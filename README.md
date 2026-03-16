@@ -1,6 +1,5 @@
 ---
 
-```markdown
 # Lumina Gallery Pro Max 💗
 
 [![Python](https://img.shields.io/badge/Python-3.8+-ff69b4?style=flat-square&logo=python&logoColor=white)](https://python.org)
@@ -199,15 +198,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 <p align="center">
   Built with 💗 by <a href="https://github.com/frankmanuelbeltran_alt">@frankmanuelbeltran_alt</a>
 </p>
-```
 
 ---
-
-## Changes Made:
-
-| Location | Update |
-|----------|--------|
-| **Clone URL** | `https://github.com/frankmanuelbeltran_alt/lumina-gallery-pro-max.git` |
-| **Screenshot Path** | `https://raw.githubusercontent.com/frankmanuelbeltran_alt/...` |
-| **Footer Credit** | `@frankmanuelbeltran_alt` with link to your GitHub profile |
-
