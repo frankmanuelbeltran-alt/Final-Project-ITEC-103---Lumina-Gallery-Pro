@@ -1,86 +1,94 @@
-
 ---
 
-#Lumina Gallery Pro Max
+# Lumina Gallery Pro Max
 
 A high-performance desktop media gallery built with Python and Tkinter. Designed for large photo and video collections with database-driven architecture, background workers, and intelligent caching.
 
-Features
+## Features
 
-Core Performance
+### Core Performance
 - Database-Driven Media Index - SQLite stores metadata, view statistics, dimensions, duration, and perceptual hashes for fast queries
 - Perceptual Duplicate Detection - Images receive perceptual hashes using imagehash
 - Intelligent Caching - Dual-layer thumbnail caching (RAM + Disk)
 - Background Processing - Directory scanning runs in worker threads
 - Lazy Thumbnail Loading - Only visible viewport thumbnails load
 
-Media Management
+### Media Management
 - Favorites System - Mark photos as favorites and filter instantly
 - Video Support - Common formats with VLC bindings and timeline controls
 - Tags & Albums - Organize media with custom tags and album collections
 - Smart Search - Filename filtering with fuzzy matching support
 - Metadata Tracking - File size, modification time, resolution, duration, view counts
 
-User Experience
+### User Experience
 - Modern Coquette Interface - Soft pink UI theme with hover animations
 - Keyboard Shortcuts - Full keyboard navigation and control
 - Drag & Drop - Import folders directly into the application
 - Soft Delete - Trash recovery with configurable retention
 
-Installation
+## Installation
 
-Prerequisites
+### Prerequisites
 - Python 3.8 or higher
 - pip package manager
 
-Clone & Install
+### Clone & Install
 
-    git clone https://github.com/frankmanuelbeltran_alt/lumina-gallery-pro-max.git
-    cd lumina-gallery-pro-max
+```
+git clone https://github.com/frankmanuelbeltran_alt/lumina-gallery-pro-max.git
+cd lumina-gallery-pro-max
+```
 
-Required Dependencies
+### Required Dependencies
 
-    pip install pillow opencv-python imagehash
+```
+pip install pillow opencv-python imagehash
+```
 
-Optional Dependencies
+### Optional Dependencies
 
-Video Playback:
+**Video Playback:**
+```
+pip install python-vlc
+```
 
-    pip install python-vlc
+**System Monitoring:**
+```
+pip install psutil
+```
 
-System Monitoring:
+**Fuzzy Search (Recommended):**
+```
+pip install rapidfuzz
+```
 
-    pip install psutil
+## Usage
 
-Fuzzy Search (Recommended):
+### Running the Application
 
-    pip install rapidfuzz
+```
+python main.py
+```
 
-Usage
-
-Running the Application
-
-    python main.py
-
-First Launch
+### First Launch
 On first run, the application loads media from the internal database. If empty, it automatically scans common directories:
 - ~/Pictures
 - ~/Videos
 - ~/Downloads
 - ~/Desktop
 
-Adding Media
+### Adding Media
 - Click Add Folder button
 - Drag and drop folders into the window
 - Use Ctrl+O keyboard shortcut
 
-Supported Formats
+## Supported Formats
 
-Images: .jpg .jpeg .png .webp .gif .bmp .tiff
+**Images:** .jpg .jpeg .png .webp .gif .bmp .tiff
 
-Videos: .mp4 .mov .mkv .webm .avi .m4v
+**Videos:** .mp4 .mov .mkv .webm .avi .m4v
 
-Keyboard Shortcuts
+## Keyboard Shortcuts
 
 | Action | Shortcut |
 |--------|----------|
@@ -100,7 +108,7 @@ Keyboard Shortcuts
 | Add Folder | Ctrl+O |
 | Refresh | F5 |
 
-Architecture
+## Architecture
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
@@ -111,18 +119,20 @@ Architecture
 | Perceptual Hashing | imagehash (pHash) | Visual similarity detection |
 | Video Processing | OpenCV + VLC | Frame extraction and playback |
 
-Project Structure
+## Project Structure
 
-    lumina-gallery-pro-max/
-    ├── main.py                 # Application entry point
-    ├── gallery.db              # SQLite database (auto-created)
-    ├── .cache/
-    │   └── thumbnails/         # Disk thumbnail cache
-    ├── .lumina_trash/          # Soft delete storage
-    ├── lumina_gallery_pro_max.log  # Application logs
-    └── README.md
+```
+lumina-gallery-pro-max/
+├── main.py                 # Application entry point
+├── gallery.db              # SQLite database (auto-created)
+├── .cache/
+│   └── thumbnails/         # Disk thumbnail cache
+├── .lumina_trash/          # Soft delete storage
+├── lumina_gallery_pro_max.log  # Application logs
+└── README.md
+```
 
-Main Components
+## Main Components
 
 | Class | Responsibility |
 |-------|--------------|
@@ -133,7 +143,7 @@ Main Components
 | ThumbnailLoader | Priority-based async thumbnail generation |
 | LuminaGalleryProMax | Main UI controller and gallery interface |
 
-Roadmap
+## Roadmap
 
 - [ ] Advanced duplicate management view
 - [ ] AI-based image tagging
@@ -144,7 +154,7 @@ Roadmap
 - [ ] Export to cloud storage
 - [ ] Face recognition grouping
 
-Contributing
+## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
@@ -154,11 +164,11 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 4. Push to the branch (git push origin feature/AmazingFeature)
 5. Open a Pull Request
 
-License
+## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-Acknowledgments
+## Acknowledgments
 
 - Built with Python and Tkinter
 - Image processing powered by Pillow and OpenCV
