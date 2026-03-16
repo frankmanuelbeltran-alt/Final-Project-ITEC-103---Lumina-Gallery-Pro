@@ -13,7 +13,7 @@
 > A high-performance desktop media gallery built with Python and Tkinter. Designed for large photo and video collections with database-driven architecture, background workers, and intelligent caching.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/yourusername/lumina-gallery-pro-max/main/assets/screenshot.png" alt="Lumina Gallery Pro Max Screenshot" width="800"/>
+  <img src="https://raw.githubusercontent.com/frankmanuelbeltran_alt/lumina-gallery-pro-max/main/assets/screenshot.png" alt="Lumina Gallery Pro Max Screenshot" width="800"/>
 </p>
 
 ## ✨ Features
@@ -47,7 +47,7 @@
 ### Clone & Install
 
 ```bash
-git clone https://github.com/yourusername/lumina-gallery-pro-max.git
+git clone https://github.com/frankmanuelbeltran_alt/lumina-gallery-pro-max.git
 cd lumina-gallery-pro-max
 ```
 
@@ -197,19 +197,17 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 <p align="center">
-  Built with 💗 by <a href="https://github.com/frankmanuelbeltran-alt">@yourusername</a>
+  Built with 💗 by <a href="https://github.com/frankmanuelbeltran_alt">@frankmanuelbeltran_alt</a>
 </p>
 ```
 
 ---
 
-## Key Improvements Made (Pre → Post Update):
+## Changes Made:
 
-| Aspect | Before | After |
-|--------|--------|-------|
-| **Badges** | None | Added 6 dynamic Shields.io badges for Python version, license, platform, SQLite, Pillow, OpenCV |
-| **Visual** | Plain text | Centered screenshot placeholder, emoji headers, table layouts |
-| **Structure** | Simple list | Organized sections with clear hierarchy (Features → Installation → Usage → Architecture) |
-| **Documentation** | Basic description | Comprehensive tables for shortcuts, formats, components, and architecture |
-| **Professional Elements** | Missing | Added Roadmap, Contributing guidelines, Acknowledgments, License section |
-| **Formatting** | Plain markdown | Proper code blocks, tables, horizontal rules, centered footer |
+| Location | Update |
+|----------|--------|
+| **Clone URL** | `https://github.com/frankmanuelbeltran_alt/lumina-gallery-pro-max.git` |
+| **Screenshot Path** | `https://raw.githubusercontent.com/frankmanuelbeltran_alt/...` |
+| **Footer Credit** | `@frankmanuelbeltran_alt` with link to your GitHub profile |
+
