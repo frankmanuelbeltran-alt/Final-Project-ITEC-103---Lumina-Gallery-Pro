@@ -1,7 +1,7 @@
 
 ---
 
-Lumina Gallery Pro Max
+#Lumina Gallery Pro Max
 
 A high-performance desktop media gallery built with Python and Tkinter. Designed for large photo and video collections with database-driven architecture, background workers, and intelligent caching.
 
