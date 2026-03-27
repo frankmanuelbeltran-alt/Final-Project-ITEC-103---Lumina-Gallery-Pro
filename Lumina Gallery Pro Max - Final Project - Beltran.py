@@ -62,7 +62,7 @@ except (ImportError, FileNotFoundError, OSError) as e:
     HAS_VLC = False
     logger.info(f"vlc not available - video playback disabled: {e}")
 
-
+# Test VLC availability
 print(f"VLC Available: {HAS_VLC}")
 if HAS_VLC:
     print("VLC is ready to use!")
@@ -70,10 +70,6 @@ else:
     print("VLC Python bindings not found. Install with: pip install python-vlc")
     
 class Config:
-    
-    APP_DIR = Path.home() / ".lumina_gallery"
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    
     THUMB_SIZE = int(os.getenv('LUMINA_THUMB_SIZE', '160')) 
     THUMB_PADDING = int(os.getenv('LUM_PADDING', '16'))  
     THUMB_QUALITY = Image.Resampling.LANCZOS  
@@ -88,9 +84,8 @@ class Config:
     MAX_CONCURRENT_LOADS = int(os.getenv('LUMINA_MAX_CONCURRENT', '6'))
     SCAN_BATCH_SIZE = 50
     TRASH_RETENTION_DAYS = int(os.getenv('LUMINA_TRASH_DAYS', '30'))
-    DB_PATH = os.getenv('LUMINA_DB_PATH', str(APP_DIR / 'gallery.db'))
-    CACHE_DIR = os.getenv('LUMINA_CACHE_DIR', str(APP_DIR / '.cache' / 'thumbnails'))
-    TRASH_DIR = str(APP_DIR / 'trash')
+    DB_PATH = os.getenv('LUMINA_DB_PATH', 'gallery.db')
+    CACHE_DIR = os.getenv('LUMINA_CACHE_DIR', '.cache/thumbnails')
 
     COLORS = {
         'bg': '#fff0f6',
@@ -110,26 +105,6 @@ class Config:
         'duplicate': '#ff66b2',
         'selected': '#ff1493'
     }
-
-    @classmethod
-    def load_preferences(cls, db_manager):
-        """Load configuration from database preferences"""
-        try:
-            thumb_size = db_manager.get_preference('thumb_size')
-            if thumb_size:
-                cls.THUMB_SIZE = int(thumb_size)
-            
-            slideshow_interval = db_manager.get_preference('slideshow_interval')
-            if slideshow_interval:
-                cls.SLIDESHOW_INTERVAL_MS = int(slideshow_interval)
-            
-            trash_retention = db_manager.get_preference('trash_retention')
-            if trash_retention:
-                cls.TRASH_RETENTION_DAYS = int(trash_retention)
-                
-            logger.info("Preferences loaded from database")
-        except Exception as e:
-            logger.warning(f"Could not load preferences: {e}")
 
 
 class ViewMode(enum.Enum):
@@ -319,8 +294,6 @@ class TkQueue:
                 func = self.queue.get_nowait()
                 try:
                     self.root.after_idle(func)
-                except tk.TclError as e:
-                    logger.error(f"Tkinter error executing queued function: {e}")
                 except Exception as e:
                     logger.error(f"Error executing queued function: {e}")
         except queue.Empty:
@@ -340,7 +313,7 @@ class ThumbnailLoader:
         self.max_concurrent = max_concurrent
         self.pending_futures = {}
         self.load_queue = queue.PriorityQueue()
-        self.immediate_queue = queue.Queue()  
+        self.immediate_queue = queue.Queue()  # NEW: Immediate priority queue
         self.active_count = 0
         self.lock = threading.RLock()
         self._shutdown = False
@@ -353,6 +326,7 @@ class ThumbnailLoader:
     def _process_queue(self):
         while not self._shutdown:
             try:
+                # NEW: Check immediate queue first for priority items
                 try:
                     priority, task_id, func, callback = self.immediate_queue.get_nowait()
                 except queue.Empty:
@@ -415,13 +389,14 @@ class ThumbnailLoader:
                 del self.pending_futures[task_id]
             self.pending_futures[task_id] = None
 
+        # Priority 0 goes to immediate queue for instant loading
         if priority == 0:
             self.immediate_queue.put((priority, task_id, func, callback))
         else:
             self.load_queue.put((priority, task_id, func, callback))
 
     def submit_immediate(self, task_id: str, func, callback=None):
-        """Submit with highest priority for immediate execution"""
+        """NEW: Submit with highest priority for immediate execution"""
         with self.lock:
             if self._shutdown:
                 return
@@ -432,7 +407,7 @@ class ThumbnailLoader:
                 del self.pending_futures[task_id]
             self.pending_futures[task_id] = None
         
-        self.immediate_queue.put((-1, task_id, func, callback)) 
+        self.immediate_queue.put((-1, task_id, func, callback))  # -1 = highest priority
 
     def cancel(self, task_id: str):
         with self.lock:
@@ -557,7 +532,7 @@ class ThumbnailCache:
                 self._add_to_ram(content_hash, img_copy)
                 self.hit_count += 1
                 return img_copy
-            except (IOError, OSError) as e:
+            except Exception as e:
                 logger.warning(f"Failed to load cached thumbnail: {e}")
                 return None
         return None
@@ -566,7 +541,7 @@ class ThumbnailCache:
         cache_path = self._get_cache_path(content_hash)
         try:
             pil_image.save(cache_path, "JPEG", quality=85, optimize=True)
-        except (IOError, OSError) as e:
+        except Exception as e:
             logger.warning(f"Cache save error: {e}")
 
         self._add_to_ram(content_hash, pil_image.copy())
@@ -629,7 +604,7 @@ class DatabaseManager:
                 conn.execute('PRAGMA synchronous=NORMAL')
                 conn.execute('PRAGMA cache_size=-64000')
                 conn.execute('PRAGMA temp_store=MEMORY')
-        except sqlite3.Error as e:
+        except Exception as e:
             logger.warning(f"Could not enable WAL mode: {e}")
 
     @contextmanager
@@ -664,8 +639,7 @@ class DatabaseManager:
                     soft_delete INTEGER DEFAULT 0,
                     deleted_at TIMESTAMP,
                     original_path TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    phash TEXT
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
 
@@ -727,7 +701,6 @@ class DatabaseManager:
                     FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE
                 )
             ''')
-            
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS thumbnail_cache (
                     hash TEXT PRIMARY KEY,
@@ -768,7 +741,7 @@ class DatabaseManager:
         for name, columns in indexes:
             try:
                 cursor.execute(f'CREATE INDEX IF NOT EXISTS {name} ON {columns}')
-            except sqlite3.Error as e:
+            except Exception as e:
                 logger.warning(f"Could not create index {name}: {e}")
 
     def migrate_if_needed(self):
@@ -803,13 +776,13 @@ class DatabaseManager:
         try:
             cursor.execute('ALTER TABLE media ADD COLUMN media_type TEXT DEFAULT "image"')
             cursor.execute('ALTER TABLE media ADD COLUMN duration INTEGER')
-        except sqlite3.OperationalError:
+        except:
             pass
 
     def _migrate_v2(self, cursor):
         try:
             cursor.execute('ALTER TABLE images RENAME TO media')
-        except sqlite3.OperationalError:
+        except:
             pass
 
     def _migrate_v3(self, cursor):
@@ -818,7 +791,7 @@ class DatabaseManager:
     def _migrate_v4(self, cursor):
         try:
             cursor.execute('ALTER TABLE media DROP COLUMN phash')
-        except sqlite3.OperationalError:
+        except:
             pass
 
     def _migrate_v5(self, cursor):
@@ -827,7 +800,7 @@ class DatabaseManager:
             cursor.execute('ALTER TABLE media ADD COLUMN deleted_at TIMESTAMP')
             cursor.execute('ALTER TABLE media ADD COLUMN original_path TEXT')
             cursor.execute('ALTER TABLE media ADD COLUMN rating INTEGER DEFAULT 0')
-        except sqlite3.OperationalError:
+        except:
             pass
 
     def _migrate_v6(self, cursor):
@@ -857,7 +830,7 @@ class DatabaseManager:
         try:
             cursor.execute('ALTER TABLE media ADD COLUMN phash TEXT')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_media_phash ON media(phash)')
-        except sqlite3.OperationalError:
+        except:
             pass
 
     def _migrate_v8(self, cursor):
@@ -907,9 +880,9 @@ class DatabaseManager:
             else:
                 cursor.execute('''
                     INSERT INTO media (path, media_type, size, mtime, sha256, 
-                                     width, height, duration, phash)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (path, media_type, size, mtime, sha256, width, height, duration, phash))
+                                     width, height, duration)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (path, media_type, size, mtime, sha256, width, height, duration))
                 return cursor.lastrowid, True
 
     def update_view_stats(self, media_id):
@@ -980,7 +953,7 @@ class DatabaseManager:
                 ''', (original_path, trash_path, media_id))
 
                 return True, trash_path
-            except (IOError, OSError) as e:
+            except Exception as e:
                 logger.error(f"Soft delete error: {e}")
                 return False, str(e)
 
@@ -1019,7 +992,7 @@ class DatabaseManager:
                 ''', (original_path, media_id))
 
                 return True, original_path
-            except (IOError, OSError) as e:
+            except Exception as e:
                 logger.error(f"Restore error: {e}")
                 return False, str(e)
 
@@ -1038,7 +1011,7 @@ class DatabaseManager:
                     os.remove(path)
                 cursor.execute('DELETE FROM media WHERE id = ?', (media_id,))
                 return True, "Deleted"
-            except (IOError, OSError) as e:
+            except Exception as e:
                 logger.error(f"Permanent delete error: {e}")
                 return False, str(e)
 
@@ -1145,9 +1118,9 @@ class DatabaseManager:
                             distance = target_hash - other_hash
                             if 0 < distance <= threshold:
                                 similar.append((dict(row), distance))
-                        except (ValueError, TypeError):
+                        except:
                             continue
-            except (ValueError, TypeError):
+            except:
                 pass
             
             similar.sort(key=lambda x: x[1])
@@ -1208,14 +1181,10 @@ class DatabaseManager:
                          (media_id, tag_id))
 
     def get_all_tags(self):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('SELECT * FROM tags ORDER BY name')
-                return [dict(row) for row in cursor.fetchall()]
-        except sqlite3.Error as e:
-            logger.error(f"Database error in get_all_tags: {e}")
-            return []
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM tags ORDER BY name')
+            return [dict(row) for row in cursor.fetchall()]
 
     def get_media_by_tag(self, tag_id):
         with self.get_connection() as conn:
@@ -1235,14 +1204,10 @@ class DatabaseManager:
             return cursor.lastrowid
 
     def get_all_albums(self):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('SELECT * FROM albums ORDER BY created_at DESC')
-                return [dict(row) for row in cursor.fetchall()]
-        except sqlite3.Error as e:
-            logger.error(f"Database error in get_all_albums: {e}")
-            return []
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM albums ORDER BY created_at DESC')
+            return [dict(row) for row in cursor.fetchall()]
 
     def add_media_to_album(self, album_id, media_id):
         with self.get_connection() as conn:
@@ -1318,7 +1283,7 @@ class ToastManager:
             frame.pack()
 
             lbl = tk.Label(frame, text=f"{emoji} {message}", 
-                          font=self._get_font(11),
+                          font=("Nunito", 11),
                           bg=self.colors['surface'], 
                           fg=self.colors['text'])
             lbl.pack()
@@ -1340,31 +1305,13 @@ class ToastManager:
                         toast.update()
                         time.sleep(0.02)
                     toast.destroy()
-                except tk.TclError:
+                except:
                     pass
 
             self.root.after(duration, dismiss)
 
-        except tk.TclError as e:
-            logger.error(f"Toast error (window destroyed): {e}")
         except Exception as e:
             logger.error(f"Toast error: {e}")
-
-    def _get_font(self, size):
-        """Get font with fallback"""
-        return (self._get_font_family(), size)
-
-    def _get_font_family(self):
-        """Return available font family with fallbacks"""
-        return "Nunito" if self._font_exists("Nunito") else "Segoe UI" if self._font_exists("Segoe UI") else "Arial"
-
-    def _font_exists(self, family):
-        """Check if font family exists"""
-        try:
-            import tkinter.font as tkfont
-            return family in tkfont.families()
-        except Exception:
-            return False
 
 
 class ExifReader:
@@ -1382,11 +1329,8 @@ class ExifReader:
                     data[tag] = value
 
                 return ExifReader._format_exif(data)
-        except (IOError, OSError) as e:
-            logger.debug(f"Could not read EXIF from {image_path}: {e}")
-            return {}
         except Exception as e:
-            logger.debug(f"Unexpected error reading EXIF from {image_path}: {e}")
+            logger.debug(f"Could not read EXIF from {image_path}: {e}")
             return {}
 
     @staticmethod
@@ -1452,7 +1396,7 @@ class ExifReader:
                     lon = -lon
 
                 return f"{lat:.6f}, {lon:.6f}"
-        except (KeyError, TypeError, ZeroDivisionError):
+        except:
             pass
         return None
 
@@ -1467,11 +1411,9 @@ class ExifReader:
 class LuminaGalleryProMax:
     def __init__(self, root):
         self.root = root
-        
         self.root.title("Lumina Gallery Pro Max 💗")
-        self.root.geometry("1500x900")
-        self.root.minsize(1100, 750)
-        self.setup_window_size()
+        self.root.geometry("1600x1000")
+        self.root.minsize(1200, 800)
 
         self.is_windows = platform.system() == "Windows"
         self.is_linux = platform.system() == "Linux"
@@ -1480,21 +1422,7 @@ class LuminaGalleryProMax:
         self.root.report_callback_exception = self._handle_error
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        
-        try:
-            self.db = DatabaseManager()
-            
-            Config.load_preferences(self.db)
-        except Exception as e:
-            logger.error(f"Failed to initialize database: {e}")
-            
-            self.db = None
-        
-        
-        if self.db is None:
-            self._show_db_error_and_exit()
-            return
-
+        self.db = DatabaseManager()
         self.thumb_cache = ThumbnailCache()
         self.tk_queue = TkQueue(root)
         self.worker = BackgroundWorker(self.tk_queue)
@@ -1505,8 +1433,8 @@ class LuminaGalleryProMax:
         self.toast = ToastManager(root, Config.COLORS)
         self.exif_reader = ExifReader()
 
-        self.trash_dir = Path(Config.TRASH_DIR)
-        self.trash_dir.mkdir(parents=True, exist_ok=True)
+        self.trash_dir = Path(".lumina_trash")
+        self.trash_dir.mkdir(exist_ok=True)
 
         try:
             deleted = self.db.cleanup_old_trash(Config.TRASH_RETENTION_DAYS)
@@ -1522,7 +1450,6 @@ class LuminaGalleryProMax:
 
         self.selected_items = set()
         self.last_selected_idx = None
-        self.loading_thumbs = set()
 
         self.current_index = 0
         self.view_mode = ViewMode.GRID
@@ -1536,10 +1463,7 @@ class LuminaGalleryProMax:
         self.slideshow_active = False
         self.slideshow_items = []
         self.slideshow_index = 0
-         
-        self.all_items = []
-        self.filtered_items = []
-        self.loading_thumbs = set() 
+
         self.slideshow_after_id = None
         self._resize_after = None
         self._scroll_update_after = None
@@ -1572,13 +1496,11 @@ class LuminaGalleryProMax:
         self.fullscreen = False
 
         self.colors = Config.COLORS
-        
-        
-        self.font_main = self._get_font(11)
-        self.font_bold = self._get_font(12, bold=True)
-        self.font_title = self._get_font(20, bold=True)
-        self.font_emoji = ("Segoe UI Emoji", 22) if self._font_exists("Segoe UI Emoji") else ("Arial", 22)
-        self.font_small = self._get_font(9)
+        self.font_main = ("Nunito", 11)
+        self.font_bold = ("Nunito", 12, "bold")
+        self.font_title = ("Nunito", 20, "bold")
+        self.font_emoji = ("Segoe UI Emoji", 22)
+        self.font_small = ("Nunito", 9)
 
         self.visible_thumbs = {}
         self.thumb_size = Config.THUMB_SIZE
@@ -1588,7 +1510,7 @@ class LuminaGalleryProMax:
         self._refreshing = False
         self.canvas_window = None
         self.preview_window = None
-        
+
         self.scanning = False
         self.scan_start_time = 0
 
@@ -1599,37 +1521,12 @@ class LuminaGalleryProMax:
 
         logger.info("LuminaGalleryProMax initialized")
 
-    def _get_font(self, size, bold=False):
-        """Get font with fallback support"""
-        family = self._get_font_family()
-        weight = "bold" if bold else "normal"
-        return (family, size, weight) if bold else (family, size)
-
-    def _get_font_family(self):
-        """Return available font family with fallbacks"""
-        if self._font_exists("Nunito"):
-            return "Nunito"
-        elif self._font_exists("Segoe UI"):
-            return "Segoe UI"
-        elif self._font_exists("Helvetica"):
-            return "Helvetica"
-        else:
-            return "Arial"
-
-    def _font_exists(self, family):
-        """Check if font family exists"""
-        try:
-            import tkinter.font as tkfont
-            return family in tkfont.families()
-        except Exception:
-            return False
-
     def _handle_error(self, exc, val, tb):
         import traceback
         logger.error("Unhandled exception:", exc_info=(exc, val, tb))
         try:
             messagebox.showerror("Error", f"An error occurred:\n{val}")
-        except tk.TclError:
+        except:
             pass
 
     def _on_close(self):
@@ -1640,7 +1537,7 @@ class LuminaGalleryProMax:
         if HAS_VLC and self.vlc_player:
             try:
                 self.vlc_player.stop()
-            except Exception:
+            except:
                 pass
 
         self.thumb_loader.cancel_all()
@@ -1653,7 +1550,7 @@ class LuminaGalleryProMax:
         if self.original_image:
             try:
                 self.original_image.close()
-            except Exception:
+            except:
                 pass
 
         logger.info("Shutdown complete")
@@ -1693,27 +1590,9 @@ class LuminaGalleryProMax:
             for x in range(50, width, 200):
                 self.header_border.create_oval(x-2, 1, x+2, 3, fill='white', outline='')
                 
-        except tk.TclError as e:
-            logger.debug(f"Header decoration error (widget destroyed): {e}")
         except Exception as e:
             logger.debug(f"Header decoration error: {e}")
-     
-    def setup_window_size(self):
-        """Automatically size and center the window based on screen resolution"""
 
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
-
-        window_w = int(screen_w * 0.8)
-        window_h = int(screen_h * 0.85)
-
-        pos_x = (screen_w - window_w) // 2
-        pos_y = (screen_h - window_h) // 2
-
-        self.root.geometry(f"{window_w}x{window_h}+{pos_x}+{pos_y}")
-
-        self.root.minsize(1100, 750)
-        
     def create_menu(self):
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
@@ -1793,7 +1672,7 @@ class LuminaGalleryProMax:
         title_container = tk.Frame(title_frame, bg=self.colors['surface'])
         title_container.pack(side=tk.LEFT)
         
-        tk.Label(title_container, text="✨", font=("Segoe UI", 16) if self._font_exists("Segoe UI") else ("Arial", 16), 
+        tk.Label(title_container, text="✨", font=("Segoe UI", 16), 
                 bg=self.colors['surface'], fg=self.colors['accent']).pack(side=tk.LEFT, padx=(0, 5))
         
         tk.Label(title_container, text="💗", font=self.font_emoji, 
@@ -1802,7 +1681,7 @@ class LuminaGalleryProMax:
         tk.Label(title_container, text="Lumina Pro Max", font=self.font_title,
                 bg=self.colors['surface'], fg=self.colors['text']).pack(side=tk.LEFT, padx=(8, 5))
         
-        tk.Label(title_container, text="✨", font=("Segoe UI", 16) if self._font_exists("Segoe UI") else ("Arial", 16), 
+        tk.Label(title_container, text="✨", font=("Segoe UI", 16), 
                 bg=self.colors['surface'], fg=self.colors['accent']).pack(side=tk.LEFT)
 
         self.stats_label = tk.Label(title_frame, text="", font=self.font_small,
@@ -1852,25 +1731,31 @@ class LuminaGalleryProMax:
         self.add_btn_frame.pack(side=tk.LEFT, padx=8)
 
     def create_sidebar(self):
+        # NEW: Create a canvas with scrollbar for the sidebar to enable scrolling
         self.sidebar_container = tk.Frame(self.main_container, width=280, bg=self.colors['surface'])
         self.sidebar_container.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 15))
         self.sidebar_container.pack_propagate(False)
 
+        # Create canvas for scrolling
         self.sidebar_canvas = tk.Canvas(self.sidebar_container, bg=self.colors['surface'], 
                                         highlightthickness=0, width=280)
         self.sidebar_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
+        # Add scrollbar
         self.sidebar_scrollbar = ttk.Scrollbar(self.sidebar_container, orient="vertical", 
                                                 command=self.sidebar_canvas.yview)
         self.sidebar_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.sidebar_canvas.configure(yscrollcommand=self.sidebar_scrollbar.set)
 
+        # Create the actual sidebar frame inside the canvas
         self.sidebar = tk.Frame(self.sidebar_canvas, bg=self.colors['surface'], width=260)
         self.sidebar_window = self.sidebar_canvas.create_window((0, 0), window=self.sidebar, 
                                                                  anchor="nw", width=260)
         
+        # Configure canvas scrolling
         self.sidebar.bind("<Configure>", lambda e: self._on_sidebar_configure())
         
+        # NEW: Bind mousewheel to sidebar
         self._bind_sidebar_mousewheel()
 
         search_frame = tk.Frame(self.sidebar, bg=self.colors['surface'], 
@@ -1878,7 +1763,7 @@ class LuminaGalleryProMax:
                                 highlightthickness=2, bd=0)
         search_frame.pack(fill=tk.X, pady=(15, 10), padx=15)
         
-        search_icon = tk.Label(search_frame, text="🔍", font=("Segoe UI", 12) if self._font_exists("Segoe UI") else ("Arial", 12),
+        search_icon = tk.Label(search_frame, text="🔍", font=("Segoe UI", 12),
                               bg=self.colors['surface'], fg=self.colors['accent'])
         search_icon.pack(side=tk.LEFT, padx=(10, 5))
         
@@ -1895,10 +1780,12 @@ class LuminaGalleryProMax:
         self.search_entry.bind('<FocusOut>', self.on_search_focus_out)
         self.search_entry.bind('<KeyRelease>', self.on_search)
         
-        self.clear_search_btn = tk.Label(search_frame, text="✕", font=("Segoe UI", 10, "bold") if self._font_exists("Segoe UI") else ("Arial", 10, "bold"),
+        # NEW: X button to clear search - initially hidden
+        self.clear_search_btn = tk.Label(search_frame, text="✕", font=("Segoe UI", 10, "bold"),
                                         bg=self.colors['surface'], fg=self.colors['text_secondary'],
                                         cursor="hand2", padx=5)
         self.clear_search_btn.bind('<Button-1>', lambda e: self.clear_search())
+        # Don't pack yet - will show when there's text
 
         lib_frame = tk.Frame(self.sidebar, bg=self.colors['surface'])
         lib_frame.pack(fill=tk.X, pady=15, padx=15)
@@ -1987,15 +1874,17 @@ class LuminaGalleryProMax:
         )
         self.clear_sel_btn.pack(fill=tk.X, pady=5)
 
+        # NEW: Add padding at bottom for scrolling
         tk.Frame(self.sidebar, height=20, bg=self.colors['surface']).pack()
 
+    # NEW: Sidebar mousewheel binding methods
     def _bind_sidebar_mousewheel(self):
-        """Bind mousewheel events to sidebar canvas only (not bind_all)"""
+        """Bind mousewheel events to sidebar canvas"""
         if self.is_linux:
-            self.sidebar_canvas.bind("<Button-4>", self._on_sidebar_scroll)
-            self.sidebar_canvas.bind("<Button-5>", self._on_sidebar_scroll)
+            self.sidebar_canvas.bind_all("<Button-4>", self._on_sidebar_scroll)
+            self.sidebar_canvas.bind_all("<Button-5>", self._on_sidebar_scroll)
         else:
-            self.sidebar_canvas.bind("<MouseWheel>", self._on_sidebar_scroll)
+            self.sidebar_canvas.bind_all("<MouseWheel>", self._on_sidebar_scroll)
 
     def _on_sidebar_scroll(self, event):
         """Handle mousewheel scroll for sidebar"""
@@ -2023,6 +1912,7 @@ class LuminaGalleryProMax:
             )
             btn.pack(fill=tk.X, pady=2)
         
+        # Update scroll region after adding content
         self.sidebar.update_idletasks()
         self._on_sidebar_configure()
 
@@ -2038,6 +1928,7 @@ class LuminaGalleryProMax:
             )
             btn.pack(fill=tk.X, pady=2)
         
+        # Update scroll region after adding content
         self.sidebar.update_idletasks()
         self._on_sidebar_configure()
 
@@ -2104,39 +1995,17 @@ class LuminaGalleryProMax:
     def _update_scrollregion(self):
         try:
             self.grid_canvas.configure(scrollregion=self.grid_canvas.bbox("all"))
-        except tk.TclError as e:
-            logger.debug(f"Scrollregion update error (widget destroyed): {e}")
         except Exception as e:
             logger.debug(f"Scrollregion update error: {e}")
 
     def _on_canvas_resize(self, event):
-        """Handle canvas resize with debouncing and validation"""
-        if event.widget != self.grid_canvas:
-            return
-        
         try:
-            if self.canvas_window:
-                self.grid_canvas.itemconfig(self.canvas_window, width=event.width)
-            
+            self.grid_canvas.itemconfig(self.canvas_window, width=event.width)
             if self._resize_after:
                 self.root.after_cancel(self._resize_after)
-                self._resize_after = None
-            
-            self._resize_after = self.root.after(
-                Config.RESIZE_DEBOUNCE_MS, 
-                self._debounced_refresh
-            )
-            
-        except tk.TclError as e:
-            logger.debug(f"Canvas resize error (widget destroyed): {e}")
+            self._resize_after = self.root.after(Config.RESIZE_DEBOUNCE_MS, self.refresh_grid)
         except Exception as e:
             logger.debug(f"Canvas resize error: {e}")
-        
-    def _debounced_refresh(self):
-        """Perform actual refresh after resize debounce"""
-        self._resize_after = None
-        if self.view_mode == ViewMode.GRID:
-            self.refresh_grid()
 
     def create_single_view(self):
         toolbar = tk.Frame(self.single_frame, height=60, bg=self.colors['surface'])
@@ -2153,6 +2022,7 @@ class LuminaGalleryProMax:
         next_btn = self._create_button(nav, "Next", self.next_media, emoji="▶")
         next_btn.pack(side=tk.LEFT, padx=5)
 
+        actions = tk.Frame(toolbar, bg=self.colors['surface'])
         actions = tk.Frame(toolbar, bg=self.colors['surface'])
         actions.pack(side=tk.RIGHT, padx=20)
 
@@ -2295,7 +2165,6 @@ class LuminaGalleryProMax:
         self.image_canvas.bind("<ButtonRelease-1>", self.end_pan)
         self.image_canvas.bind("<Double-Button-1>", self.double_click_zoom)
 
-        
         self.grid_canvas.bind("<MouseWheel>", self.smooth_scroll)
         self.grid_canvas.bind("<Button-4>", self.smooth_scroll)
         self.grid_canvas.bind("<Button-5>", self.smooth_scroll)
@@ -2355,8 +2224,7 @@ class LuminaGalleryProMax:
                     soft_delete=bool(row.get('soft_delete', 0)),
                     deleted_at=row.get('deleted_at'),
                     original_path=row.get('original_path'),
-                    rating=row.get('rating', 0),
-                    phash=row.get('phash')
+                    rating=row.get('rating', 0)
                 )
                 self.all_media.append(item)
                 self.media_by_id[item.id] = item
@@ -2442,7 +2310,7 @@ class LuminaGalleryProMax:
                             width, height = img.size
                             if HAS_IMAGEHASH:
                                 phash = str(imagehash.phash(img))
-                    except (IOError, OSError):
+                    except:
                         pass
                 
                 db_batch.append({
@@ -2456,7 +2324,7 @@ class LuminaGalleryProMax:
                     'phash': phash
                 })
                 
-            except (IOError, OSError) as e:
+            except Exception as e:
                 logger.debug(f"Error scanning {file_path}: {e}")
         
         added = 0
@@ -2465,7 +2333,7 @@ class LuminaGalleryProMax:
                 _, is_new = self.db.get_or_create_media(**item)
                 if is_new:
                     added += 1
-            except sqlite3.Error as e:
+            except Exception as e:
                 logger.debug(f"Error inserting {item['path']}: {e}")
         
         return added
@@ -2512,7 +2380,7 @@ class LuminaGalleryProMax:
             size = stat.st_size
             mtime = stat.st_mtime
 
-            width = height = duration = phash = None
+            width = height = duration = None
 
             if is_video:
                 cap = cv2.VideoCapture(path)
@@ -2530,144 +2398,630 @@ class LuminaGalleryProMax:
                     with Image.open(path) as img:
                         img = ImageOps.exif_transpose(img)
                         width, height = img.size
-                        if HAS_IMAGEHASH:
-                            phash = str(imagehash.phash(img))
-                except (IOError, OSError):
+                except:
                     pass
 
             self.db.get_or_create_media(
                 path, media_type, size, mtime,
-                width=width, height=height, duration=duration, phash=phash
+                width=width, height=height, duration=duration
             )
 
             self.load_media_from_db()
             self.toast.show(f"Added {os.path.basename(path)}")
 
-        except (IOError, OSError) as e:
+        except Exception as e:
             logger.error(f"Error adding file {path}: {e}")
 
-    def clear_gallery(self):
-        """Remove all existing gallery widgets safely"""
-
-        if not hasattr(self, "grid_inner_frame"):
-            return
-
-        for widget in self.grid_inner_frame.winfo_children():
-            widget.destroy()
-
-        if hasattr(self, "loading_thumbs"):
-            self.loading_thumbs.clear()
-
     def apply_filters(self):
-        """Apply current filters and rebuild gallery"""
-
-        items = self.all_media
-
+        self._clear_all_thumbnails()
+        filtered = list(self.all_media)
+    
+        if self.showing_favorites:
+            filtered = [m for m in filtered if m.favorite]
+            
+        if self.showing_videos_only:
+            filtered = [m for m in filtered if m.is_video]
+            
         if self.showing_deleted:
-            items = [i for i in items if i.soft_delete]
+            filtered = [m for m in filtered if m.soft_delete]
+        else:
+            filtered = [m for m in filtered if not m.soft_delete]
 
-        elif self.showing_favorites:
-            items = [i for i in items if i.favorite]
-
-        elif self.showing_videos_only:
-            items = [i for i in items if i.is_video]
-
-        elif self.showing_album is not None:
+        if self.showing_album:
             album_media = self.db.get_media_in_album(self.showing_album)
             album_ids = {m['id'] for m in album_media}
-            items = [i for i in items if i.id in album_ids]
+            filtered = [m for m in filtered if m.id in album_ids]
 
-        elif self.showing_tag is not None:
+        if self.showing_tag:
             tag_media = self.db.get_media_by_tag(self.showing_tag)
             tag_ids = {m['id'] for m in tag_media}
-            items = [i for i in items if i.id in tag_ids]
-
-        
+            filtered = [m for m in filtered if m.id in tag_ids]
+            
         if self.filter_query:
+            q = self.filter_query.lower()
+            
             if HAS_RAPIDFUZZ:
-                
-                scored = []
-                query = self.filter_query.lower()
-                for item in items:
-                    score = fuzz.partial_ratio(query, item.filename.lower())
+                scored_results = []
+                for m in filtered:
+                    score = fuzz.partial_ratio(q, m.filename.lower())
                     if score > 60:
-                        scored.append((item, score))
-                scored.sort(key=lambda x: x[1], reverse=True)
-                items = [x[0] for x in scored]
+                        scored_results.append((m, score))
+            
+                scored_results.sort(key=lambda x: x[1], reverse=True)
+                filtered = [m for m, _ in scored_results]
             else:
-                
-                query = self.filter_query.lower()
-                items = [i for i in items if query in i.filename.lower()]
-
-        
+                filtered = [m for m in filtered if q in m.filename.lower()]
+            
         if self.sort_mode == SortMode.DATE:
-            items.sort(key=lambda x: x.mtime, reverse=True)
+           filtered.sort(key=lambda m: m.mtime, reverse=True)
         elif self.sort_mode == SortMode.NAME:
-            items.sort(key=lambda x: x.filename.lower())
+            filtered.sort(key=lambda m: m.filename.lower())
         elif self.sort_mode == SortMode.SIZE:
-            items.sort(key=lambda x: x.size, reverse=True)
+            filtered.sort(key=lambda m: m.size, reverse=True)
         elif self.sort_mode == SortMode.VIEWS:
-            items.sort(key=lambda x: x.view_count, reverse=True)
+            filtered.sort(key=lambda m: m.view_count, reverse=True)
         elif self.sort_mode == SortMode.RATING:
-            items.sort(key=lambda x: x.rating, reverse=True)
+            filtered.sort(key=lambda m: m.rating, reverse=True)
         elif self.sort_mode == SortMode.RANDOM:
             import random
-            random.shuffle(items)
+            random.shuffle(filtered)
 
-        self.media = items
+        self.media = filtered
         self.refresh_grid()
-
+    
     def refresh_grid(self):
-        """Refresh the grid layout with proper existence checks"""
-        if not self.media:
-            self.show_empty_state()
-            return
-        
-        if hasattr(self, "empty_frame") and self.empty_frame.winfo_exists():
-            self.empty_frame.destroy()
-        
-        if not hasattr(self, "grid_canvas") or not self.grid_canvas.winfo_exists():
-            return
-        
         if self.canvas_window is None:
+            return
+
+        if not hasattr(self, "grid_canvas") or not self.grid_canvas.winfo_exists():
             return
 
         with self._render_lock:
             if self._refreshing:
                 return
             self._refreshing = True
+        try:
+            self.grid_canvas.update_idletasks()
+            width = self.grid_canvas.winfo_width()
             
+            if width <= 1:
+                return
+            canvas_width = max(width - 30, 400)
+
+            total_item_width = self.thumb_size + (self.thumb_padding * 2)
+
+            if total_item_width <= 0:
+                return
+
+            new_columns = max(2, canvas_width // total_item_width)
+
+            if self.columns != new_columns or len(self.visible_thumbs) == 0:
+                self.columns = new_columns
+                self._recycle_thumbnail_layout(canvas_width)
+            else:
+                self._update_thumbnail_selections()
+
+            self.update_scroll_region()
+
+        finally:
+            self._refreshing = False
+
+    def _recycle_thumbnail_layout(self, canvas_width):
+        if canvas_width is None or canvas_width <= 1:
+            canvas_width = max(self.grid_canvas.winfo_width() - 30, 400)
+        if canvas_width <= 0:
+            return  
+
+        with self._render_lock:
+            if getattr(self, "_refreshing", False):
+                return
+            self._refreshing = True
+
             try:
-                self.grid_canvas.update_idletasks()
-                canvas_width = self.grid_canvas.winfo_width()
-                
-                if canvas_width <= 1:
+                try:
+                    self.grid_canvas.itemconfig(self.canvas_window, width=canvas_width)
+                except tk.TclError:
+                    self.canvas_window = self.grid_canvas.create_window(
+                        (0, 0), window=self.grid_inner_frame, anchor="nw", tags="inner", width=canvas_width
+                    )
+
+                self.grid_inner_frame.config(width=canvas_width)
+
+                if not self.media:
+                    self._clear_all_thumbnails()    
+                    self.show_empty_state()
                     return
-                
-                usable_width = max(canvas_width - 30, 400)
+
                 total_item_width = self.thumb_size + (self.thumb_padding * 2)
-                
+
                 if total_item_width <= 0:
                     return
-                
-                new_columns = max(2, usable_width // total_item_width)
-                
-                if abs(self.columns - new_columns) >= 1 or len(self.visible_thumbs) == 0:
+
+                new_columns = max(2, canvas_width // total_item_width)
+
+                if self.columns != new_columns:
                     self.columns = new_columns
                     self._clear_all_thumbnails()
+
+                start, end = self.get_visible_range()
+
+                if start >= end:
+                    start = 0
+                    end = min(len(self.media), self.columns * 5)
+    
+                start = max(0, start)
+                end = min(len(self.media), end) 
                 
-                self._recycle_thumbnail_layout(usable_width)
-                self.update_scroll_region()
+                visible_indices = set(range(start, end))
+
+                buffer_size = self.columns * 3  
+                viewport_buffer = set(
+                    range(
+                        max(0, start - buffer_size), 
+                        min(len(self.media), end + buffer_size)))
                 
+                for idx in list(self.visible_thumbs.keys()):
+                    if idx not in viewport_buffer:
+                        self._remove_thumbnail(idx)
+
+                for idx in list(self.visible_thumbs.keys()):
+                    if idx not in visible_indices and idx in self.visible_thumbs:
+                        frame = self.visible_thumbs[idx]
+                        if frame.winfo_exists():
+                            frame.grid_forget()
+
+                for idx in visible_indices:
+                    if idx < len(self.media):
+                        if idx in self.visible_thumbs:
+                            self._reposition_thumbnail(idx)
+                        else:
+                            self._create_thumbnail_widget_fast(idx)
+
             finally:
                 self._refreshing = False
 
-    def show_empty_state(self):
-        
-        for widget in self.grid_inner_frame.winfo_children():
-            widget.destroy()
+    def _update_thumbnail_selections(self):
+        for idx, frame in list(self.visible_thumbs.items()):
+            if idx >= len(self.media):
+                self._remove_thumbnail(idx)
+                continue
+
+            item = self.media[idx]
+            is_selected = item.id in self.selected_items
+
+            bg_color = self.colors['surface_selected'] if is_selected else self.colors['surface']
+            border_color = self.colors['selected'] if is_selected else self.colors['border']
+
+            frame.config(bg=bg_color, highlightbackground=border_color,
+                        highlightthickness=3 if is_selected else 2)
+
+    def _reposition_thumbnail(self, idx):
+        if idx not in self.visible_thumbs:
+            return
+
+        if idx >= len(self.media):
+            self._remove_thumbnail(idx)
+            return
+
+        frame = self.visible_thumbs[idx]
+        item = self.media[idx]
+
+        if not frame.winfo_exists():
+            return
+
+        row = idx // self.columns
+        col = idx % self.columns
+
+        frame.grid(row=row, column=col, padx=self.thumb_padding//2, pady=self.thumb_padding//2)
+
+        frame.media_path = item.path
+        frame.media_id = item.id
+        frame.media_idx = idx
+
+        is_selected = item.id in self.selected_items
+        bg_color = self.colors['surface_selected'] if is_selected else self.colors['surface']
+        border_color = self.colors['selected'] if is_selected else self.colors['border']
+
+        frame.config(bg=bg_color, highlightbackground=border_color,
+                    highlightthickness=3 if is_selected else 2)
+
+    def _create_thumbnail_widget_fast(self, idx):
+        if idx >= len(self.media):
+            return
+
+        if self.thumb_size <= 0:
+            return
+
+        item = self.media[idx]
+        row = idx // self.columns
+        col = idx % self.columns
+
+        is_selected = item.id in self.selected_items
+        bg_color = self.colors['surface_selected'] if is_selected else self.colors['surface']
+        border_color = self.colors['selected'] if is_selected else self.colors['border']
+
+        frame = tk.Frame(self.grid_inner_frame, width=self.thumb_size, height=self.thumb_size,
+                        bg=bg_color, highlightbackground=border_color,
+                        highlightthickness=3 if is_selected else 2)
+        frame.grid(row=row, column=col, padx=self.thumb_padding//2, pady=self.thumb_padding//2)
+        frame.grid_propagate(False)
+
+        frame.media_path = item.path
+        frame.media_id = item.id
+        frame.media_idx = idx
+
+        placeholder_size = min(100, self.thumb_size - 20)
+        if placeholder_size > 0:
+            placeholder = tk.Label(frame, text="⏳", font=("Segoe UI", 20),
+                                  bg=bg_color, fg=self.colors['text_secondary'])
+            placeholder.place(relx=0.5, rely=0.5, anchor="center")
+
+        self.visible_thumbs[idx] = frame
+
+        frame.bind("<Enter>", lambda e, f=frame, i=idx: self._on_thumb_enter(e, f, i))
+        frame.bind("<Leave>", lambda e, f=frame: self._on_thumb_leave(e, f))
+        frame.bind("<Button-1>", lambda e, f=frame: self._on_thumbnail_click(e, f))
+        frame.config(cursor="hand2")
+
+        start, end = self.get_visible_range()
+        priority = 0 if start <= idx < end else 2
+
+        task_id = f"thumb_{idx}_{item.path}"
+        self.thumb_loader.submit(
+            task_id, 
+            priority,
+            lambda p=item.path: self._load_thumbnail_image(p),
+            lambda result, f=frame, i=idx: 
+            self.tk_queue.put(lambda: self._apply_thumbnail_image(f, i, result))
+        )
+
+    def _refresh_thumbnail_by_item_id(self, item_id):
+        for idx, media_item in enumerate(self.media):
+            if media_item.id == item_id:
+                if idx in self.visible_thumbs:
+                    self._remove_thumbnail(idx)
+                    self._create_thumbnail_widget_fast(idx)
+                break 
+
+    def _on_thumb_enter(self, event, frame, idx):
+        item = self.media[idx]
+        if item.id not in self.selected_items:
+            frame.config(bg=self.colors['surface_hover'], highlightbackground=self.colors['accent'])
+        frame.tkraise()
+
+        if self.preview_after_id:
+            self.root.after_cancel(self.preview_after_id)
+
+        self.preview_after_id = self.root.after(Config.PREVIEW_DELAY_MS, 
+                                                lambda: self.show_preview(item.path, event.x_root, event.y_root))
+
+    def _on_thumb_leave(self, event, frame):
+        idx = getattr(frame, 'media_idx', None)
+        if idx is not None and idx < len(self.media):
+            item = self.media[idx]
+            if item.id not in self.selected_items:
+                frame.config(bg=self.colors['surface'], highlightbackground=self.colors['border'])
+
+        if self.preview_after_id:
+            self.root.after_cancel(self.preview_after_id)
+            self.preview_after_id = None
+        self.hide_preview()
+
+    def _load_thumbnail_image(self, path):
+        try:
+            item = self.media_by_path.get(path)
+            if not item:
+                return None
             
+            target_size = self.thumb_size - 20 
+            if item.is_video:
+                stat = os.stat(path)
+                cache_key = self.thumb_cache.compute_content_hash(path, stat)
+                cached = self.thumb_cache.get(cache_key)
+            
+                if cached:
+                    img = cached.copy()
+                else:
+                    cap = cv2.VideoCapture(path)
+                    ret, frame = cap.read()
+                    if ret:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        img = Image.fromarray(frame)
+                        img.thumbnail((target_size, target_size), Config.THUMB_QUALITY)
+                        self.thumb_cache.put(cache_key, img.copy())
+                    else:
+                        img = Image.new('RGB', (target_size, target_size), self.colors['surface'])
+                    cap.release()
+            else:
+                with Image.open(path) as img_full:
+                    img = img_full.convert('RGB')
+                    img = ImageOps.exif_transpose(img)
+
+                    img.thumbnail((target_size, target_size), Config.THUMB_QUALITY)
+        
+            return (img, item.favorite, item.is_video, item.rating)
+        
+        except Exception as e:
+            logger.debug(f"Thumbnail load error for {path}: {e}")
+            return None
+
+    def _apply_thumbnail_image(self, frame, idx, result):
+        if not frame.winfo_exists():
+            return
+    
+        current_idx = getattr(frame, 'media_idx', None)
+        if current_idx != idx:
+            return
+    
+        for widget in frame.winfo_children():
+            widget.destroy()
+    
+        if result is None:
+            tk.Label(frame, text="💔", font=("Segoe UI", 24),
+                bg=frame.cget('bg'), fg=self.colors['danger']).place(relx=0.5, rely=0.5, anchor="center")
+            return
+    
+        img, is_fav, is_video, rating = result
+    
+        photo = ImageTk.PhotoImage(img)
+        frame.photo = photo
+
+        frame_width = self.thumb_size
+        frame_height = self.thumb_size
+    
+        lbl = tk.Label(frame, image=photo, bg=frame.cget('bg'))
+        lbl.place(relx=0.5, rely=0.45, anchor="center")
+    
+        if is_fav:
+            tk.Label(frame, text="♥", font=("Segoe UI", 12),
+                    fg=self.colors['favorite'], bg=frame.cget('bg')).place(x=5, y=5)
+    
+        if rating > 0:
+            stars = "★" * rating
+            tk.Label(frame, text=stars, font=("Segoe UI", 8),
+                    fg=self.colors['accent'], bg=frame.cget('bg')).place(x=5, y=25)
+    
+        if is_video:
+            tk.Label(frame, text="▶", font=("Segoe UI", 10),
+                    fg=self.colors['video'], bg=frame.cget('bg')).place(relx=0.5, y=2, anchor="n")
+    
+        name = os.path.basename(getattr(frame, 'media_path', ''))
+        if len(name) > 20:
+            name = name[:17] + "..."
+        tk.Label(frame, text=name, font=self.font_small,
+                bg=frame.cget('bg'), fg=self.colors['text_secondary']).place(relx=0.5, rely=0.88, anchor="center")
+
+    def _remove_thumbnail(self, idx):
+        if idx in self.visible_thumbs:
+            frame = self.visible_thumbs[idx]
+            try:
+                if frame.winfo_exists():
+                    frame.destroy()
+            except:
+                pass
+            del self.visible_thumbs[idx]
+
+        for task_id in list(self.thumb_loader.pending_futures.keys()):
+            if task_id.startswith(f"thumb_{idx}_"):
+                self.thumb_loader.cancel(task_id)
+
+    def _clear_all_thumbnails(self):
+        if hasattr(self, "thumb_loader"):
+            self.thumb_loader.cancel_all()
+
+        for idx in list(self.visible_thumbs.keys()):
+            frame = self.visible_thumbs[idx]
+            try:
+                if frame.winfo_exists():
+                    frame.destroy()
+            except:
+                pass
+
         self.visible_thumbs.clear()
+        self.update_selection_label()
+
+    def get_visible_range(self):
+        if not self.media:
+            return 0, 0
+    
+        canvas_height = self.grid_canvas.winfo_height()
+        if canvas_height <= 0:
+            canvas_height = 600
+    
+        row_height = self.thumb_size + self.thumb_padding
+    
+        first_y = self.grid_canvas.canvasy(0)
+        last_y = self.grid_canvas.canvasy(canvas_height)
+    
+        start_row = max(0, int(first_y // row_height) - 1)
+        visible_rows = int((last_y - first_y) // row_height) + 3
+    
+        start = start_row * self.columns
+        end = (start_row + visible_rows) * self.columns
+    
+        start = max(0, start)
+        end = min(len(self.media), end)
+    
+        if end - start > Config.MAX_VISIBLE_THUMBS:
+            end = start + Config.MAX_VISIBLE_THUMBS
+    
+        return start, end
+
+    def update_visible_thumbnails(self):
+        if not self.media or self._refreshing:
+            return
+
+        start, end = self.get_visible_range()
+        visible_range = range(start, end)
+
+        for idx, frame in self.visible_thumbs.items():
+            if idx in visible_range:
+                if frame.winfo_ismapped():
+                    continue
+                self._reposition_thumbnail(idx)
+            else:
+                if frame.winfo_ismapped():
+                    frame.grid_forget()
+
+        for idx in visible_range:
+            if idx < len(self.media) and idx not in self.visible_thumbs:
+                self._create_thumbnail_widget_fast(idx)
+
+        current_indices = set(self.visible_thumbs.keys())
+        viewport_buffer = set(range(max(0, start - self.columns * 2), 
+                                    min(len(self.media), end + self.columns * 2)))
+
+        to_remove = current_indices - viewport_buffer
+        for idx in to_remove:
+            self._remove_thumbnail(idx)
+
+    def _on_thumbnail_click(self, event, frame):
+        if not frame.winfo_exists():
+            return
+
+        path = getattr(frame, 'media_path', None)
+        idx = getattr(frame, 'media_idx', None)
+
+        if path is None or idx is None:
+            return
+
+        item = self.media_by_path.get(path)
+        if not item:
+            return
+
+        if event.state & 0x4:
+            self.toggle_selection(item)
+            self.refresh_grid()
+        elif event.state & 0x1:
+            if self.last_selected_idx is not None:
+                start = min(self.last_selected_idx, idx)
+                end = max(self.last_selected_idx, idx)
+                for i in range(start, end + 1):
+                    if i < len(self.media):
+                        self.selected_items.add(self.media[i].id)
+                self.refresh_grid()
+            else:
+                self.toggle_selection(item)
+                self.last_selected_idx = idx
+        else:
+            self.clear_selection()
+            self.last_selected_idx = idx
+            self.open_media(item)
+
+    def toggle_selection(self, item):
+        if item.id in self.selected_items:
+            self.selected_items.remove(item.id)
+        else:
+            self.selected_items.add(item.id)
+        self.update_selection_label()
+
+    def clear_selection(self):
+        self.selected_items.clear()
+        self.last_selected_idx = None
+        self.refresh_grid()
+        self.update_selection_label()
+
+    def select_all(self):
+        for item in self.media:
+            self.selected_items.add(item.id)
+        self.refresh_grid()
+        self.update_selection_label()
+
+    def update_selection_label(self):
+        count = len(self.selected_items)
+        if count > 0:
+            self.selection_label.config(text=f"{count} selected")
+        else:
+            self.selection_label.config(text="")
+
+    def update_scroll_region(self):
+        if not self.media:
+            return
+        rows = math.ceil(len(self.media) / self.columns)
+        height = rows * (self.thumb_size + self.thumb_padding)
+        self.grid_canvas.config(scrollregion=(0, 0, 0, height))
+
+    def on_scroll(self, *args):
+        self.grid_canvas.yview(*args)
+
+        if self._scroll_update_after is not None:
+            try:
+                self.root.after_cancel(self._scroll_update_after)
+            except:
+                pass
+
+        self._scroll_update_after = self.root.after(50, self.update_visible_thumbnails)
+
+    def smooth_scroll(self, event):
+        if getattr(self, 'is_linux', False):
+            delta = 3 if event.num == 4 else -3 if event.num == 5 else 0
+        else:
+            delta = event.delta // 40 if abs(event.delta) > 10 else event.delta // 4
+
+        self.grid_canvas.yview_scroll(int(-delta), "units")
+
+        if self._scroll_update_after is not None:
+            try:
+                self.root.after_cancel(self._scroll_update_after)
+            except:
+                pass
+
+        self._scroll_update_after = self.root.after(50, self.update_visible_thumbnails)
+
+    def show_preview(self, path, x, y):
+        if self.preview_window:
+            self.preview_window.destroy()
+
+        item = self.media_by_path.get(path)
+        if not item or item.is_video:
+            return
+
+        try:
+            self.preview_window = tk.Toplevel(self.root)
+            self.preview_window.overrideredirect(True)
+            self.preview_window.attributes('-topmost', True)
+
+            preview_size = 300
+            x = min(x + 20, self.root.winfo_screenwidth() - preview_size - 20)
+            y = min(y + 20, self.root.winfo_screenheight() - preview_size - 20)
+
+            self.preview_window.geometry(f"{preview_size}x{preview_size}+{x}+{y}")
+
+            with Image.open(path) as img:
+                img = img.convert('RGB')
+                img = ImageOps.exif_transpose(img)
+                img.thumbnail((preview_size, preview_size), Config.THUMB_QUALITY)
+                photo = ImageTk.PhotoImage(img)
+
+            self.preview_window.photo = photo
+
+            lbl = tk.Label(self.preview_window, image=photo, bg=self.colors['surface'],
+                          highlightbackground=self.colors['accent'], highlightthickness=2)
+            lbl.pack(fill=tk.BOTH, expand=True)
+
+        except Exception as e:
+            logger.debug(f"Preview error: {e}")
+            self.hide_preview()
+
+    def hide_preview(self):
+        if self.preview_window:
+            try:
+                self.preview_window.destroy()
+            except:
+                pass
+            self.preview_window = None
+
+    def show_empty_state(self):
+        for widget in self.grid_inner_frame.winfo_children():
+            try:
+                if widget not in [self.visible_thumbs.get(i) for i in self.visible_thumbs]:
+                    widget.destroy()
+            except:
+                pass
+
+        for widget in self.grid_inner_frame.winfo_children():
+            if isinstance(widget, tk.Frame) and not hasattr(widget, 'media_path'):
+                return
 
         empty = tk.Frame(self.grid_inner_frame, bg=self.colors['bg'])
         empty.pack(expand=True, fill=tk.BOTH, pady=50)
@@ -2677,7 +3031,7 @@ class LuminaGalleryProMax:
         
         self._draw_decorative_ribbon(ribbon_canvas)
 
-        tk.Label(empty, text="🎀", font=("Segoe UI", 72) if self._font_exists("Segoe UI") else ("Arial", 72), 
+        tk.Label(empty, text="🎀", font=("Segoe UI", 72), 
                 bg=self.colors['bg'], fg=self.colors['accent']).pack(pady=(10, 20))
 
         if self.showing_deleted:
@@ -2720,72 +3074,66 @@ class LuminaGalleryProMax:
                     fg=self.colors['text_secondary']).pack()
     
     def _draw_decorative_ribbon(self, canvas):
-        try:
-            canvas.update_idletasks()
-            width = max(canvas.winfo_width(), 400)
-            height = 120
-            
-            ribbon_color = self.colors['accent']
-            shadow_color = self.colors['surface_selected']
-            
-            points_main = [
-                50, 30,
-                width//2 - 100, 25,
-                width//2, 20,
-                width//2 + 100, 25,
-                width - 50, 30,
-                width - 60, 70,
-                width//2 + 100, 75,
-                width//2, 80,
-                width//2 - 100, 75,
-                60, 70
-            ]
-            
-            canvas.create_polygon(
-                [p + 3 if i % 2 == 0 else p + 3 for i, p in enumerate(points_main)],
-                fill=shadow_color, smooth=True
-            )
-            
-            canvas.create_polygon(points_main, fill=ribbon_color, smooth=True, outline=self.colors['surface_hover'], width=2)
-            
-            left_tail = [50, 30, 20, 50, 50, 70, 60, 70]
-            canvas.create_polygon(left_tail, fill=ribbon_color, outline=self.colors['surface_hover'], width=1)
-            canvas.create_polygon([p - 5 if i % 2 == 0 else p for i, p in enumerate(left_tail)], 
-                                 fill=shadow_color)
-            
-            right_tail = [width - 50, 30, width - 20, 50, width - 50, 70, width - 60, 70]
-            canvas.create_polygon(right_tail, fill=ribbon_color, outline=self.colors['surface_hover'], width=1)
-            canvas.create_polygon([p + 5 if i % 2 == 0 else p for i, p in enumerate(right_tail)], 
-                                 fill=shadow_color)
-            
-            for x in range(100, width - 100, 40):
-                canvas.create_oval(x - 4, 45, x + 4, 53, fill='white', outline='')
-                canvas.create_oval(x - 2, 47, x + 2, 51, fill=ribbon_color, outline='')
-            
-            center_x = width // 2
-            canvas.create_text(center_x, 50, text="✨", font=("Segoe UI", 24) if self._font_exists("Segoe UI") else ("Arial", 24))
-            
-            canvas.create_text(80, 50, text="💕", font=("Segoe UI", 16) if self._font_exists("Segoe UI") else ("Arial", 16))
-            canvas.create_text(width - 80, 50, text="💕", font=("Segoe UI", 16) if self._font_exists("Segoe UI") else ("Arial", 16))
-        except tk.TclError:
-            pass
+        canvas.update_idletasks()
+        width = max(canvas.winfo_width(), 400)
+        height = 120
+        
+        ribbon_color = self.colors['accent']
+        shadow_color = self.colors['surface_selected']
+        
+        points_main = [
+            50, 30,
+            width//2 - 100, 25,
+            width//2, 20,
+            width//2 + 100, 25,
+            width - 50, 30,
+            width - 60, 70,
+            width//2 + 100, 75,
+            width//2, 80,
+            width//2 - 100, 75,
+            60, 70
+        ]
+        
+        canvas.create_polygon(
+            [p + 3 if i % 2 == 0 else p + 3 for i, p in enumerate(points_main)],
+            fill=shadow_color, smooth=True
+        )
+        
+        canvas.create_polygon(points_main, fill=ribbon_color, smooth=True, outline=self.colors['surface_hover'], width=2)
+        
+        left_tail = [50, 30, 20, 50, 50, 70, 60, 70]
+        canvas.create_polygon(left_tail, fill=ribbon_color, outline=self.colors['surface_hover'], width=1)
+        canvas.create_polygon([p - 5 if i % 2 == 0 else p for i, p in enumerate(left_tail)], 
+                             fill=shadow_color)
+        
+        right_tail = [width - 50, 30, width - 20, 50, width - 50, 70, width - 60, 70]
+        canvas.create_polygon(right_tail, fill=ribbon_color, outline=self.colors['surface_hover'], width=1)
+        canvas.create_polygon([p + 5 if i % 2 == 0 else p for i, p in enumerate(right_tail)], 
+                             fill=shadow_color)
+        
+        for x in range(100, width - 100, 40):
+            canvas.create_oval(x - 4, 45, x + 4, 53, fill='white', outline='')
+            canvas.create_oval(x - 2, 47, x + 2, 51, fill=ribbon_color, outline='')
+        
+        center_x = width // 2
+        canvas.create_text(center_x, 50, text="✨", font=("Segoe UI", 24))
+        
+        canvas.create_text(80, 50, text="💕", font=("Segoe UI", 16))
+        canvas.create_text(width - 80, 50, text="💕", font=("Segoe UI", 16))
     
     def _draw_cute_pattern(self, canvas):
-        try:
-            canvas.update_idletasks()
-            width = max(canvas.winfo_width(), 400)
-            height = 80
-            
-            elements = ["🌸", "💕", "✨", "🎀", "⭐", "🌷"]
-            positions = [(100, 40), (width//3, 30), (width//2, 50), 
-                        (2*width//3, 35), (width - 100, 40), (width//4, 60)]
-            
-            for i, (x, y) in enumerate(positions):
-                if x < width - 50:
-                    canvas.create_text(x, y, text=elements[i % len(elements)], 
-                                      font=("Segoe UI", 14 + (i % 3) * 4) if self._font_exists("Segoe UI") else ("Arial", 14 + (i % 3) * 4))
-        except tk.TclError:
-            pass
+        canvas.update_idletasks()
+        width = max(canvas.winfo_width(), 400)
+        height = 80
+        
+        elements = ["🌸", "💕", "✨", "🎀", "⭐", "🌷"]
+        positions = [(100, 40), (width//3, 30), (width//2, 50), 
+                    (2*width//3, 35), (width - 100, 40), (width//4, 60)]
+        
+        for i, (x, y) in enumerate(positions):
+            if x < width - 50:
+                canvas.create_text(x, y, text=elements[i % len(elements)], 
+                                  font=("Segoe UI", 14 + (i % 3) * 4))
 
     def open_media(self, item):
         if isinstance(item, str):
@@ -2823,7 +3171,7 @@ class LuminaGalleryProMax:
         try:
             with Image.open(path) as img:
                 img.convert('RGB')
-        except (IOError, OSError):
+        except:
             pass
 
     def show_image(self, path):
@@ -2832,7 +3180,7 @@ class LuminaGalleryProMax:
         if self.original_image:
             try:
                 self.original_image.close()
-            except Exception:
+            except:
                 pass
 
         self.canvas_image_id = None
@@ -2850,7 +3198,7 @@ class LuminaGalleryProMax:
         try:
             self.original_image = Image.open(path).convert('RGB')
             self.original_image = ImageOps.exif_transpose(self.original_image)
-        except (IOError, OSError) as e:
+        except Exception as e:
             logger.error(f"Error loading image {path}: {e}")
             self.image_canvas.create_text(
                 self.image_canvas.winfo_width()//2, 
@@ -2895,13 +3243,6 @@ class LuminaGalleryProMax:
             try:
                 if self.is_windows:
                     self.vlc_player.set_hwnd(self.video_frame.winfo_id())
-                elif self.is_linux:
-                    
-                    try:
-                        self.vlc_player.set_xwindow(self.video_frame.winfo_id())
-                    except Exception:
-                        
-                        pass
                 else:
                     self.vlc_player.set_xwindow(self.video_frame.winfo_id())
                 self.vlc_attached = True
@@ -3052,51 +3393,32 @@ class LuminaGalleryProMax:
             self.show_grid_view()
 
     def show_grid_view(self):
-        """Show grid view with proper cleanup and state management"""
+        self.grid_frame.tkraise()
         self.view_mode = ViewMode.GRID
-        
-        try:
-            self.single_frame.place_forget()
-        except tk.TclError:
-            pass
-        
-        try:
-            self.slideshow_frame.pack_forget()
-        except tk.TclError:
-            pass
-        
+
+        self.single_frame.pack_forget()
+        self.slideshow_frame.pack_forget()
         self.grid_frame.pack(fill=tk.BOTH, expand=True)
-        self.grid_frame.lift()
-        
+
         self.hide_preview()
         self.stop_slideshow()
-        
+
         if HAS_VLC and self.vlc_player:
             try:
                 self.vlc_player.stop()
-                self.video_frame.pack_forget()
-                if hasattr(self, 'video_controls'):
-                    self.video_controls.pack_forget()
-            except Exception as e:
-                logger.debug(f"Video cleanup error: {e}")
-        
-        self.zoom_level = 1.0
-        self.pan_x = 0
-        self.pan_y = 0
-        
-        self.root.after(50, self.update_visible_thumbnails)
+            except:
+                pass
+
+        self.update_visible_thumbnails()
 
     def show_single_view(self):
-        """Show single media view with proper frame management"""
         self.view_mode = ViewMode.SINGLE
-        
-        self.grid_frame.place_forget()
-        self.slideshow_frame.place_forget()
-        
+    
+        self.grid_frame.pack_forget()
+        self.slideshow_frame.pack_forget()
+    
         self.single_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.single_frame.lift()
-        
-        self.single_frame.focus_set()
 
     def show_all_photos(self):
         self.showing_favorites = False
@@ -3104,9 +3426,7 @@ class LuminaGalleryProMax:
         self.showing_deleted = False
         self.showing_album = None
         self.showing_tag = None
-
         self.clear_selection()
-        self.clear_gallery() 
         self.apply_filters()
 
     def show_trash(self):
@@ -3115,9 +3435,7 @@ class LuminaGalleryProMax:
         self.showing_deleted = True
         self.showing_album = None
         self.showing_tag = None
-        
         self.clear_selection()
-        self.clear_gallery() 
         self.apply_filters()
 
     def show_album(self, album_id):
@@ -3126,9 +3444,7 @@ class LuminaGalleryProMax:
         self.showing_deleted = False
         self.showing_album = album_id
         self.showing_tag = None
-        
         self.clear_selection()
-        self.clear_gallery() 
         self.apply_filters()
 
     def show_tag_filter(self, tag_id):
@@ -3137,9 +3453,7 @@ class LuminaGalleryProMax:
         self.showing_deleted = False
         self.showing_album = None
         self.showing_tag = tag_id
-        
         self.clear_selection()
-        self.clear_gallery() 
         self.apply_filters()
 
     def show_duplicates(self):
@@ -3223,7 +3537,7 @@ class LuminaGalleryProMax:
                 self.slideshow_label.config(image=photo)
                 self.slideshow_label.image = photo
 
-        except (IOError, OSError) as e:
+        except Exception as e:
             logger.error(f"Slideshow image error: {e}")
             self.slideshow_index = (self.slideshow_index + 1) % len(self.slideshow_items)
             self.slideshow_after_id = self.root.after(100, self.show_slideshow_image)
@@ -3350,7 +3664,7 @@ class LuminaGalleryProMax:
                     try:
                         shutil.copy2(item.path, dest)
                         exported += 1
-                    except (IOError, OSError) as e:
+                    except Exception as e:
                         logger.error(f"Export error: {e}")
 
             self.toast.show(f"Exported {exported} items", emoji="📤")
@@ -3371,7 +3685,7 @@ class LuminaGalleryProMax:
                             zf.write(item.path, item.filename)
 
                 self.toast.show(f"Created {os.path.basename(dest)}", emoji="📦")
-            except (IOError, OSError) as e:
+            except Exception as e:
                 logger.error(f"ZIP export error: {e}")
                 messagebox.showerror("Error", f"Export failed: {e}")
 
@@ -3653,104 +3967,105 @@ class LuminaGalleryProMax:
             self.show_album_manager()
 
     def show_preferences(self):
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Preferences")
-        dialog.geometry("400x500")
-        dialog.transient(self.root)
-        dialog.config(bg=self.colors['bg'])
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Preferences")
+            dialog.geometry("400x500")
+            dialog.transient(self.root)
+            dialog.config(bg=self.colors['bg'])
         
-        tk.Label(dialog, text="⚙️ Preferences", font=self.font_title,
-                bg=self.colors['bg'], fg=self.colors['text']).pack(pady=10)
+            tk.Label(dialog, text="⚙️ Preferences", font=self.font_title,
+                    bg=self.colors['bg'], fg=self.colors['text']).pack(pady=10)
         
-        frame = tk.Frame(dialog, bg=self.colors['surface'], padx=20, pady=20)
-        frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+            frame = tk.Frame(dialog, bg=self.colors['surface'], padx=20, pady=20)
+            frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
         
-        tk.Label(frame, text="Thumbnail Size:", font=self.font_main,
-                bg=self.colors['surface'], fg=self.colors['text']).pack(anchor=tk.W)
+            tk.Label(frame, text="Thumbnail Size:", font=self.font_main,
+                    bg=self.colors['surface'], fg=self.colors['text']).pack(anchor=tk.W)
         
-        size_var = tk.IntVar(value=self.thumb_size)
-        tk.Scale(frame, from_=80, to=300, orient=tk.HORIZONTAL, variable=size_var,
-                bg=self.colors['surface'], highlightthickness=0).pack(fill=tk.X, pady=5)
+            size_var = tk.IntVar(value=self.thumb_size)
+            tk.Scale(frame, from_=80, to=300, orient=tk.HORIZONTAL, variable=size_var,
+                    bg=self.colors['surface'], highlightthickness=0).pack(fill=tk.X, pady=5)
         
-        tk.Label(frame, text="Slideshow Interval (seconds):", font=self.font_main,
-                bg=self.colors['surface'], fg=self.colors['text']).pack(anchor=tk.W, pady=(10, 0))
+            tk.Label(frame, text="Slideshow Interval (seconds):", font=self.font_main,
+                    bg=self.colors['surface'], fg=self.colors['text']).pack(anchor=tk.W, pady=(10, 0))
         
-        interval_var = tk.IntVar(value=Config.SLIDESHOW_INTERVAL_MS // 1000)
-        tk.Scale(frame, from_=1, to=60, orient=tk.HORIZONTAL, variable=interval_var,
-                bg=self.colors['surface'], highlightthickness=0).pack(fill=tk.X, pady=5)
+            interval_var = tk.IntVar(value=Config.SLIDESHOW_INTERVAL_MS // 1000)
+            tk.Scale(frame, from_=1, to=60, orient=tk.HORIZONTAL, variable=interval_var,
+                    bg=self.colors['surface'], highlightthickness=0).pack(fill=tk.X, pady=5)
         
-        tk.Label(frame, text="Trash Retention (days):", font=self.font_main,
-                bg=self.colors['surface'], fg=self.colors['text']).pack(anchor=tk.W, pady=(10, 0))
+            tk.Label(frame, text="Trash Retention (days):", font=self.font_main,
+                    bg=self.colors['surface'], fg=self.colors['text']).pack(anchor=tk.W, pady=(10, 0))
         
-        trash_var = tk.IntVar(value=Config.TRASH_RETENTION_DAYS)
-        tk.Scale(frame, from_=1, to=90, orient=tk.HORIZONTAL, variable=trash_var,
-                bg=self.colors['surface'], highlightthickness=0).pack(fill=tk.X, pady=5)
+            trash_var = tk.IntVar(value=Config.TRASH_RETENTION_DAYS)
+            tk.Scale(frame, from_=1, to=90, orient=tk.HORIZONTAL, variable=trash_var,
+                    bg=self.colors['surface'], highlightthickness=0).pack(fill=tk.X, pady=5)
         
-        def save_prefs():
-            self.thumb_size = size_var.get()
-            Config.THUMB_SIZE = self.thumb_size
-            Config.SLIDESHOW_INTERVAL_MS = interval_var.get() * 1000
-            Config.TRASH_RETENTION_DAYS = trash_var.get()
+    def save_prefs():
+        self.thumb_size = size_var.get()
+        Config.THUMB_SIZE = self.thumb_size
+        Config.SLIDESHOW_INTERVAL_MS = interval_var.get() * 1000
+        Config.TRASH_RETENTION_DAYS = trash_var.get()
 
-            self.db.set_preference('thumb_size', str(self.thumb_size))
-            self.db.set_preference('slideshow_interval', str(Config.SLIDESHOW_INTERVAL_MS))
-            self.db.set_preference('trash_retention', str(Config.TRASH_RETENTION_DAYS))
+        self.db.set_preference('thumb_size', str(self.thumb_size))
+        self.db.set_preference('slideshow_interval', str(Config.SLIDESHOW_INTERVAL_MS))
+        self.db.set_preference('trash_retention', str(Config.TRASH_RETENTION_DAYS))
 
-            self.refresh_grid()
-            dialog.destroy()
-            self.toast.show("Preferences saved", emoji="✅")
+        self.refresh_grid()
+        dialog.destroy()
+        self.toast.show("Preferences saved", emoji="✅")
 
-        tk.Button(
-            dialog,
-            text="Save",
-            command=save_prefs,
-            bg=self.colors['accent'],
-            fg='white',
+
+    tk.Button(
+        dialog,
+        text="Save",
+        command=save_prefs,
+        bg=self.colors['accent'],
+        fg='white',
             font=self.font_bold,
-            relief='flat',
-            padx=20,
-            pady=10
-        ).pack(pady=20)
+        relief='flat',
+        padx=20,
+        pady=10
+ ).pack(pady=20)
 
     def show_shortcuts(self):
         shortcuts = """
-Keyboard Shortcuts:
+        Keyboard Shortcuts:
 
-Navigation:
-← / →         Previous/Next media
-Escape        Back to grid / Stop slideshow
+        Navigation:
+        ← / →         Previous/Next media
+        Escape        Back to grid / Stop slideshow
 
-Actions:
-F             Toggle favorite
-1-5           Set rating (1-5 stars)
-Delete        Move to trash
-Shift+Delete  Permanently delete
-Space         Play/Pause video
-R / Shift+R   Rotate right/left
-F11           Toggle fullscreen
-S             Start/Stop slideshow
-Ctrl+A        Select all
-Ctrl+D        Clear selection
-Ctrl+C        Copy file path
-Ctrl+O        Add folder
-F5            Refresh
-"""
+        Actions:
+        F             Toggle favorite
+        1-5           Set rating (1-5 stars)
+        Delete        Move to trash
+        Shift+Delete  Permanently delete
+        Space         Play/Pause video
+        R / Shift+R   Rotate right/left
+        F11           Toggle fullscreen
+        S             Start/Stop slideshow
+        Ctrl+A        Select all
+        Ctrl+D        Clear selection
+        Ctrl+C        Copy file path
+        Ctrl+O        Add folder
+        F5            Refresh
+        """
         messagebox.showinfo("Keyboard Shortcuts", shortcuts)
 
     def show_about(self):
         about_text = """Lumina Gallery Pro Max 💗
 
-A beautiful, fast media gallery with:
-• Image and video support
-• Tags and albums
-• Favorites and ratings
-• Slideshow and fullscreen
-• Duplicate detection
-• Soft delete with trash recovery
+        Version: 2.0
+        A beautiful, fast media gallery with:
+        • Image and video support
+        • Tags and albums
+        • Favorites and ratings
+                • Slideshow and fullscreen
+        • Duplicate detection
+        • Soft delete with trash recovery
 
-Built with Python, Tkinter, and love ✨
-by frankmanuebeltran_alt Github👌
-"""
+        Built with Python, Tkinter, and love ✨
+        """
         messagebox.showinfo("About", about_text)
 
     def prev_media(self):
@@ -3796,7 +4111,7 @@ by frankmanuebeltran_alt Github👌
             current = self.vlc_player.get_time() / 1000
             if length > 0 and hasattr(self, 'time_label'):
                 self.time_label.config(text=f"{int(current//60)}:{int(current%60):02d} / {int(length//60)}:{int(length%60):02d}")
-        except Exception:
+        except:
             pass
 
         self.video_timeline_after_id = self.root.after(500, self.update_video_timeline)
@@ -3856,6 +4171,7 @@ by frankmanuebeltran_alt Github👌
         if self.filter_query == "search photos...":
             self.filter_query = ""
         
+        # NEW: Show/hide X button based on search text
         if self.filter_query and self.filter_query != "search photos...":
             self.clear_search_btn.pack(side=tk.RIGHT, padx=(0, 10))
         else:
@@ -3911,621 +4227,8 @@ by frankmanuebeltran_alt Github👌
                 b = int(246 - (246 - 193) * ratio)
                 color = f'#{r:02x}{g:02x}{b:02x}'
                 self.gradient_canvas.create_line(0, i, width, i, fill=color, width=1)
-        except tk.TclError as e:
-            logger.error(f"Gradient draw error (widget destroyed): {e}")
         except Exception as e:
             logger.error(f"Gradient draw error: {e}")
-
-        
-    def _recycle_thumbnail_layout(self, canvas_width):
-        """Efficiently recycle thumbnail widgets with improved bounds checking"""
-        if canvas_width is None or canvas_width <= 1:
-            canvas_width = max(self.grid_canvas.winfo_width() - 30, 400)
-        
-        if canvas_width <= 0:
-            return  
-
-        with self._render_lock:
-            if getattr(self, "_refreshing", False):
-                return
-            self._refreshing = True
-
-            try:
-                try:
-                    self.grid_canvas.itemconfig(self.canvas_window, width=canvas_width)
-                except tk.TclError:
-                    self.canvas_window = self.grid_canvas.create_window(
-                        (0, 0), window=self.grid_inner_frame, anchor="nw", tags="inner", width=canvas_width
-                    )
-
-                self.grid_inner_frame.config(width=canvas_width)
-
-                if not self.media:
-                    self._clear_all_thumbnails()    
-                    self.show_empty_state()
-                    return
-
-                total_item_width = self.thumb_size + (self.thumb_padding * 2)
-                if total_item_width <= 0:
-                    return
-
-                new_columns = max(2, canvas_width // total_item_width)
-                
-                if self.columns != new_columns:
-                    self.columns = new_columns
-                    self._clear_all_thumbnails()
-
-                start, end = self.get_visible_range()
-                
-                start = max(0, min(start, len(self.media)))
-                end = max(start, min(end, len(self.media)))
-                
-                if start >= len(self.media):
-                    return
-                
-                visible_indices = set(range(start, end))
-                
-                buffer_size = self.columns * 8  
-                viewport_buffer = set(
-                    range(
-                        max(0, start - buffer_size), 
-                        min(len(self.media), end + buffer_size)
-                    )
-                )
-                
-                for idx in list(self.visible_thumbs.keys()):
-                    if idx not in viewport_buffer:
-                        self._remove_thumbnail(idx)
-
-                for idx in list(self.visible_thumbs.keys()):
-                    if idx not in visible_indices and idx in self.visible_thumbs:
-                        frame = self.visible_thumbs[idx]
-                        if frame.winfo_exists():
-                            frame.grid_forget()
-
-                for idx in visible_indices:
-                    if idx < len(self.media):
-                        if idx in self.visible_thumbs:
-                            self._reposition_thumbnail(idx)
-                        else:
-                            self._create_thumbnail_widget_fast(idx)
-
-            finally:
-                self._refreshing = False
-
-    def _update_thumbnail_selections(self):
-        for idx, frame in list(self.visible_thumbs.items()):
-            if idx >= len(self.media):
-                self._remove_thumbnail(idx)
-                continue
-
-            item = self.media[idx]
-            is_selected = item.id in self.selected_items
-
-            bg_color = self.colors['surface_selected'] if is_selected else self.colors['surface']
-            border_color = self.colors['selected'] if is_selected else self.colors['border']
-
-            frame.config(bg=bg_color, highlightbackground=border_color,
-                        highlightthickness=3 if is_selected else 2)
-
-    def _reposition_thumbnail(self, idx):
-        if idx not in self.visible_thumbs:
-            return
-
-        if idx >= len(self.media):
-            self._remove_thumbnail(idx)
-            return
-
-        frame = self.visible_thumbs[idx]
-        item = self.media[idx]
-
-        if not frame.winfo_exists():
-            return
-
-        row = idx // self.columns
-        col = idx % self.columns
-
-        frame.grid(row=row, column=col, padx=self.thumb_padding//2, pady=self.thumb_padding//2)
-
-        frame.media_path = item.path
-        frame.media_id = item.id
-        frame.media_idx = idx
-
-        is_selected = item.id in self.selected_items
-        bg_color = self.colors['surface_selected'] if is_selected else self.colors['surface']
-        border_color = self.colors['selected'] if is_selected else self.colors['border']
-
-        frame.config(bg=bg_color, highlightbackground=border_color,
-                    highlightthickness=3 if is_selected else 2)
-
-    def _create_thumbnail_widget_fast(self, idx):
-        """Create thumbnail widget with validation and error handling"""
-        if idx >= len(self.media) or idx < 0:
-            return
-        
-        if self.thumb_size <= 0:
-            return
-
-        item = self.media[idx]
-        row = idx // self.columns
-        col = idx % self.columns
-
-        is_selected = item.id in self.selected_items
-        bg_color = self.colors['surface_selected'] if is_selected else self.colors['surface']
-        border_color = self.colors['selected'] if is_selected else self.colors['border']
-
-        frame = tk.Frame(
-            self.grid_inner_frame, 
-            width=self.thumb_size, 
-            height=self.thumb_size,
-            bg=bg_color, 
-            highlightbackground=border_color,
-            highlightthickness=3 if is_selected else 2
-        )
-        frame.grid(
-            row=row, 
-            column=col, 
-            padx=self.thumb_padding//2, 
-            pady=self.thumb_padding//2,
-            sticky="nsew"
-        )
-        frame.grid_propagate(False)
-
-        frame.media_path = item.path
-        frame.media_id = item.id
-        frame.media_idx = idx
-
-        placeholder_size = min(100, self.thumb_size - 20)
-        if placeholder_size > 0:
-            placeholder = tk.Label(
-                frame, 
-                text="⏳", 
-                font=("Segoe UI", 20) if self._font_exists("Segoe UI") else ("Arial", 20),
-                bg=bg_color, 
-                fg=self.colors['text_secondary']
-            )
-            placeholder.place(relx=0.5, rely=0.5, anchor="center")
-
-        self.visible_thumbs[idx] = frame
-
-        frame.bind("<Enter>", lambda e, f=frame, i=idx: self._on_thumb_enter(e, f, i))
-        frame.bind("<Leave>", lambda e, f=frame: self._on_thumb_leave(e, f))
-        frame.bind("<Button-1>", lambda e, f=frame: self._on_thumbnail_click(e, f))
-        frame.config(cursor="hand2")
-
-        start, end = self.get_visible_range()
-        priority = 0 if start <= idx < end else 2  
-
-        task_id = f"thumb_{idx}_{hash(item.path)}"
-        
-        if item.path not in self.loading_thumbs:
-            self.loading_thumbs.add(item.path)
-
-            self.thumb_loader.submit(
-                task_id,
-                priority,
-                lambda p=item.path: self._load_thumbnail_image(p),
-                lambda result, f=frame, i=idx, p=item.path:
-                    self.tk_queue.put(lambda: self._on_thumbnail_ready(f, i, result, p))
-            )
-
-    def _refresh_thumbnail_by_item_id(self, item_id):
-        for idx, media_item in enumerate(self.media):
-            if media_item.id == item_id:
-                if idx in self.visible_thumbs:
-                    self._remove_thumbnail(idx)
-                    self._create_thumbnail_widget_fast(idx)
-                break 
-
-    def _on_thumb_enter(self, event, frame, idx):
-        item = self.media[idx]
-        if item.id not in self.selected_items:
-            frame.config(bg=self.colors['surface_hover'], highlightbackground=self.colors['accent'])
-        frame.tkraise()
-
-        if self.preview_after_id:
-            self.root.after_cancel(self.preview_after_id)
-
-        self.preview_after_id = self.root.after(Config.PREVIEW_DELAY_MS, 
-                                                lambda: self.show_preview(item.path, event.x_root, event.y_root))
-
-    def _on_thumb_leave(self, event, frame):
-        idx = getattr(frame, 'media_idx', None)
-        if idx is not None and idx < len(self.media):
-            item = self.media[idx]
-            if item.id not in self.selected_items:
-                frame.config(bg=self.colors['surface'], highlightbackground=self.colors['border'])
-
-        if self.preview_after_id:
-            self.root.after_cancel(self.preview_after_id)
-            self.preview_after_id = None
-        self.hide_preview()
-
-    def _load_thumbnail_image(self, path):
-        try:
-            item = self.media_by_path.get(path)
-            if not item:
-                return None
-            
-            target_size = self.thumb_size - 20 
-            if item.is_video:
-                stat = os.stat(path)
-                cache_key = self.thumb_cache.compute_content_hash(path, stat)
-                cached = self.thumb_cache.get(cache_key)
-            
-                if cached:
-                    img = cached.copy()
-                else:
-                    cap = cv2.VideoCapture(path)
-                    ret, frame = cap.read()
-                    if ret:
-                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        img = Image.fromarray(frame)
-                        img.thumbnail((target_size, target_size), Config.THUMB_QUALITY)
-                        self.thumb_cache.put(cache_key, img.copy())
-                    else:
-                        img = Image.new('RGB', (target_size, target_size), self.colors['surface'])
-                    cap.release()
-            else:
-                with Image.open(path) as img_full:
-                    img = img_full.convert('RGB')
-                    img = ImageOps.exif_transpose(img)
-
-                    img.thumbnail((target_size, target_size), Config.THUMB_QUALITY)
-        
-            return (img, item.favorite, item.is_video, item.rating)
-        
-        except (IOError, OSError) as e:
-            logger.debug(f"Thumbnail load error for {path}: {e}")
-            return None
-
-    def _apply_thumbnail_image(self, frame, idx, result):
-        """Apply loaded thumbnail image with validation"""
-        if not frame.winfo_exists():
-            return
-        
-        current_idx = getattr(frame, 'media_idx', None)
-        if current_idx != idx:
-            return
-        
-        for widget in frame.winfo_children():
-            widget.destroy()
-        
-        if result is None:
-            tk.Label(
-                frame, 
-                text="💔", 
-                font=("Segoe UI", 24) if self._font_exists("Segoe UI") else ("Arial", 24),
-                bg=frame.cget('bg'), 
-                fg=self.colors['danger']
-            ).place(relx=0.5, rely=0.5, anchor="center")
-            return
-        
-        img, is_fav, is_video, rating = result
-        
-        try:
-            photo = ImageTk.PhotoImage(img)
-        except Exception:
-            return
-        
-        frame.photo = photo  
-
-        lbl = tk.Label(frame, image=photo, bg=frame.cget('bg'))
-        lbl.place(relx=0.5, rely=0.45, anchor="center")
-        
-        if is_fav:
-            tk.Label(
-                frame, 
-                text="♥", 
-                font=("Segoe UI", 12) if self._font_exists("Segoe UI") else ("Arial", 12),
-                fg=self.colors['favorite'], 
-                bg=frame.cget('bg')
-            ).place(x=5, y=5)
-        
-        if rating > 0:
-            stars = "★" * rating
-            tk.Label(
-                frame, 
-                text=stars, 
-                font=("Segoe UI", 8) if self._font_exists("Segoe UI") else ("Arial", 8),
-                fg=self.colors['accent'], 
-                bg=frame.cget('bg')
-            ).place(x=5, y=25)
-        
-        if is_video:
-            tk.Label(
-                frame, 
-                text="▶", 
-                font=("Segoe UI", 10) if self._font_exists("Segoe UI") else ("Arial", 10),
-                fg=self.colors['video'], 
-                bg=frame.cget('bg')
-            ).place(relx=0.5, y=2, anchor="n")
-        
-        name = os.path.basename(getattr(frame, 'media_path', ''))
-        if len(name) > 20:
-            name = name[:17] + "..."
-        
-        tk.Label(
-            frame, 
-            text=name, 
-            font=self.font_small,
-            bg=frame.cget('bg'), 
-            fg=self.colors['text_secondary']
-        ).place(relx=0.5, rely=0.88, anchor="center")
-
-    def _on_thumbnail_ready(self, frame, idx, result, path):
-        """Called when a thumbnail finishes loading"""
-        self.loading_thumbs.discard(path)
-
-        if frame.winfo_exists():
-            self._apply_thumbnail_image(frame, idx, result)
-
-
-    def _remove_thumbnail(self, idx):
-        if idx in self.visible_thumbs:
-            frame = self.visible_thumbs[idx]
-            try:
-                if frame.winfo_exists():
-                    frame.destroy()
-            except tk.TclError:
-                pass
-            del self.visible_thumbs[idx]
-
-        for task_id in list(self.thumb_loader.pending_futures.keys()):
-            if task_id.startswith(f"thumb_{idx}_"):
-                self.thumb_loader.cancel(task_id)
-
-    def _clear_all_thumbnails(self):
-        if hasattr(self, "thumb_loader"):
-            self.thumb_loader.cancel_all()
-
-        for idx in list(self.visible_thumbs.keys()):
-            frame = self.visible_thumbs[idx]
-            try:
-                if frame.winfo_exists():
-                    frame.destroy()
-            except tk.TclError:
-                pass
-
-        self.visible_thumbs.clear()
-        self.update_selection_label()
-
-    def get_visible_range(self):
-        """Calculate visible thumbnail range with improved bounds checking"""
-        if not self.media or self.columns <= 0:
-            return 0, 0
-        
-        canvas_height = self.grid_canvas.winfo_height()
-        canvas_width = self.grid_canvas.winfo_width()
-        
-        if canvas_height <= 0:
-            canvas_height = 600
-        if canvas_width <= 0:
-            canvas_width = 800
-        
-        row_height = self.thumb_size + self.thumb_padding
-        if row_height <= 0:
-            row_height = 200
-        
-        first_y = self.grid_canvas.canvasy(0)
-        last_y = self.grid_canvas.canvasy(canvas_height)
-        
-        start_row = max(0, int(first_y // row_height) - 1)
-        visible_rows = max(1, int((last_y - first_y) // row_height) + 3)
-        
-        start = start_row * self.columns
-        end = (start_row + visible_rows) * self.columns
-        
-        start = max(0, min(start, len(self.media)))
-        end = max(start, min(end, len(self.media)))
-        
-        if end - start > Config.MAX_VISIBLE_THUMBS:
-            end = start + Config.MAX_VISIBLE_THUMBS
-        
-        return start, end
-
-    def update_visible_thumbnails(self):
-        """Update visible thumbnails with proper synchronization"""
-        if not self.media or getattr(self, '_refreshing', False):
-            return
-        
-        if self._scroll_update_after is not None:
-            try:
-                self.root.after_cancel(self._scroll_update_after)
-            except Exception:
-                pass
-        
-        self._scroll_update_after = self.root.after(50, self._do_update_visible_thumbnails)
-
-    def _do_update_visible_thumbnails(self):
-        """Actual thumbnail update logic"""
-        self._scroll_update_after = None
-        
-        if not self.media:
-            return
-        
-        start, end = self.get_visible_range()
-        if start >= end:
-            return
-        
-        visible_range = set(range(start, end))
-        
-        for idx, frame in list(self.visible_thumbs.items()):
-            if idx in visible_range:
-                if not frame.winfo_ismapped():
-                    self._reposition_thumbnail(idx)
-            else:
-                if frame.winfo_ismapped():
-                    frame.grid_forget()
-        
-        for idx in visible_range:
-            if idx < len(self.media) and idx not in self.visible_thumbs:
-                self._create_thumbnail_widget_fast(idx)
-        
-        buffer_start = max(0, start - self.columns * 3)
-        buffer_end = min(len(self.media), end + self.columns * 3)
-        viewport_buffer = set(range(buffer_start, buffer_end))
-        
-        for idx in list(self.visible_thumbs.keys()):
-            if idx not in viewport_buffer:
-                self._remove_thumbnail(idx)
-
-    def _on_thumbnail_click(self, event, frame):
-        """Handle thumbnail click with proper modifier detection"""
-        if not frame.winfo_exists():
-            return
-
-        path = getattr(frame, 'media_path', None)
-        idx = getattr(frame, 'media_idx', None)
-
-        if path is None or idx is None or idx >= len(self.media):
-            return
-
-        item = self.media_by_path.get(path)
-        if not item:
-            return
-
-        is_ctrl = (event.state & 0x4) != 0  
-        is_shift = (event.state & 0x1) != 0  
-        
-        if is_ctrl:
-            self.toggle_selection(item)
-            self.refresh_grid()
-            
-        elif is_shift and self.last_selected_idx is not None:
-            start = min(self.last_selected_idx, idx)
-            end = max(self.last_selected_idx, idx)
-            for i in range(start, end + 1):
-                if 0 <= i < len(self.media):
-                    self.selected_items.add(self.media[i].id)
-            self.last_selected_idx = idx
-            self.refresh_grid()
-            
-        else:
-            self.clear_selection()
-            self.last_selected_idx = idx
-            self.open_media(item)
-
-    def toggle_selection(self, item):
-        if item.id in self.selected_items:
-            self.selected_items.remove(item.id)
-        else:
-            self.selected_items.add(item.id)
-        self.update_selection_label()
-
-    def clear_selection(self):
-        self.selected_items.clear()
-        self.last_selected_idx = None
-        self.refresh_grid()
-        self.update_selection_label()
-
-    def select_all(self):
-        for item in self.media:
-            self.selected_items.add(item.id)
-        self.refresh_grid()
-        self.update_selection_label()
-
-    def update_selection_label(self):
-        count = len(self.selected_items)
-        if count > 0:
-            self.selection_label.config(text=f"{count} selected")
-        else:
-            self.selection_label.config(text="")
-
-    def update_scroll_region(self):
-        if not self.media:
-            return
-        rows = math.ceil(len(self.media) / self.columns)
-        height = rows * (self.thumb_size + self.thumb_padding)
-        self.grid_canvas.config(scrollregion=(0, 0, 0, height))
-
-    def on_scroll(self, *args):
-        self.grid_canvas.yview(*args)
-
-        if self._scroll_update_after is not None:
-            try:
-                self.root.after_cancel(self._scroll_update_after)
-            except Exception:
-                pass
-
-        self._scroll_update_after = self.root.after(50, self.update_visible_thumbnails)
-
-    def smooth_scroll(self, event):
-        """Handle smooth scrolling with cross-platform support"""
-        if self.is_linux:
-            if event.num == 4:
-                delta = -3
-            elif event.num == 5:
-                delta = 3
-            else:
-                delta = 0
-        else:
-            if abs(event.delta) > 10:
-                delta = event.delta // 40
-            else:
-                delta = event.delta // 4
-        
-        if delta != 0:
-            self.grid_canvas.yview_scroll(int(-delta), "units")
-        
-        self.update_visible_thumbnails()
-        
-        return "break"
-
-    def show_preview(self, path, x, y):
-        if self.preview_window:
-            self.preview_window.destroy()
-
-        item = self.media_by_path.get(path)
-        if not item or item.is_video:
-            return
-
-        try:
-            self.preview_window = tk.Toplevel(self.root)
-            self.preview_window.overrideredirect(True)
-            self.preview_window.attributes('-topmost', True)
-
-            preview_size = 300
-            x = min(x + 20, self.root.winfo_screenwidth() - preview_size - 20)
-            y = min(y + 20, self.root.winfo_screenheight() - preview_size - 20)
-
-            self.preview_window.geometry(f"{preview_size}x{preview_size}+{x}+{y}")
-
-            with Image.open(path) as img:
-                img = img.convert('RGB')
-                img = ImageOps.exif_transpose(img)
-                img.thumbnail((preview_size, preview_size), Config.THUMB_QUALITY)
-                photo = ImageTk.PhotoImage(img)
-
-            self.preview_window.photo = photo
-
-            lbl = tk.Label(self.preview_window, image=photo, bg=self.colors['surface'],
-                          highlightbackground=self.colors['accent'], highlightthickness=2)
-            lbl.pack(fill=tk.BOTH, expand=True)
-
-        except (IOError, OSError) as e:
-            logger.debug(f"Preview error: {e}")
-            self.hide_preview()
-
-    def hide_preview(self):
-        if self.preview_window:
-            try:
-                self.preview_window.destroy()
-            except tk.TclError:
-                pass
-            self.preview_window = None
-
-    def _show_video_placeholder(self):
-        """Show placeholder when VLC is not available"""
-        self.image_canvas.delete("all")
-        self.image_canvas.create_text(
-            self.image_canvas.winfo_width()//2,
-            self.image_canvas.winfo_height()//2,
-            text="🎬 VLC not available\nInstall python-vlc for video playback",
-            font=self.font_title,
-            fill=self.colors['text_secondary'],
-            justify="center"
-        )
 
 
 def main():
